@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Backup Reports</h2>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-3">
+                <label class="form-label">Job</label>
+                <select class="form-select" name="job_id">
+                    <option value="">All Jobs</option>
+                    {% for job in jobs %}
+                    <option value="{{ job.id }}" {% if request.args.get('job_id') == job.id|string %}selected{% endif %}>
+                        {{ job.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Start Date</label>
+                <input type="date" class="form-control" name="start_date" value="{{ request.args.get('start_date', '') }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">End Date</label>
+                <input type="date" class="form-control" name="end_date" value="{{ request.args.get('end_date', '') }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">&nbsp;</label>
+                <button type="submit" class="btn btn-primary w-100">Filter</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5>Backup History</h5>
+    </div>
+    <div class="card-body">
+        {% if history %}
+        <div class="table-responsive">
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>Job</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                        <th>File Size</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for record in history %}
+                    <tr>
+                        <td>{{ record.backup_job.name }}</td>
+                        <td>{{ record.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td>{{ record.end_time.strftime('%Y-%m-%d %H:%M:%S') if record.end_time else 'N/A' }}</td>
+                        <td>
+                            {% if record.end_time %}
+                                {{ (record.end_time - record.start_time).total_seconds()|round(2) }} seconds
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="status-badge status-{{ record.status }}">
+                                {{ record.status }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if record.file_size %}
+                                {{ (record.file_size / 1024 / 1024)|round(2) }} MB
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </td>
+                        <td>{{ record.message|default('', true) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-center">No backup history found.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

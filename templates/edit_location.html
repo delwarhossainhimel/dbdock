@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5>Edit Storage Location</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('update_location', location_id=location.id) }}">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" name="name" value="{{ location.name }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" name="type" id="type" required>
+                            <option value="local" {% if location.type.value == 'local' %}selected{% endif %}>Local</option>
+                            <option value="ftp" {% if location.type.value == 'ftp' %}selected{% endif %}>FTP</option>
+                            <option value="s3" {% if location.type.value == 's3' %}selected{% endif %}>S3</option>
+                            <option value="blob" {% if location.type.value == 'blob' %}selected{% endif %}>Azure Blob</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Local Storage Config -->
+                    <div id="local-config" class="storage-config" {% if location.type.value != 'local' %}style="display: none;"{% endif %}>
+                        <div class="mb-3">
+                            <label class="form-label">Path</label>
+                            <input type="text" class="form-control" name="local_path" value="{{ config.path }}">
+                        </div>
+                    </div>
+                    
+                    <!-- FTP Storage Config -->
+                    <div id="ftp-config" class="storage-config" {% if location.type.value != 'ftp' %}style="display: none;"{% endif %}>
+                        <div class="mb-3">
+                            <label class="form-label">Host</label>
+                            <input type="text" class="form-control" name="ftp_host" value="{{ config.host }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Port</label>
+                            <input type="number" class="form-control" name="ftp_port" value="{{ config.port or 21 }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Username</label>
+                            <input type="text" class="form-control" name="ftp_username" value="{{ config.username }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Password</label>
+                            <input type="password" class="form-control" name="ftp_password" value="{{ config.password }}">
+                        </div>
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" name="ftp_passive" id="ftp_passive" {% if config.passive_mode %}checked{% endif %}>
+                            <label class="form-check-label" for="ftp_passive">Passive Mode</label>
+                        </div>
+                    </div>
+                    
+                    <!-- S3 Storage Config -->
+                    <div id="s3-config" class="storage-config" {% if location.type.value != 's3' %}style="display: none;"{% endif %}>
+                        <div class="mb-3">
+                            <label class="form-label">Bucket</label>
+                            <input type="text" class="form-control" name="s3_bucket" value="{{ config.bucket }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Access Key</label>
+                            <input type="text" class="form-control" name="s3_access_key" value="{{ config.access_key }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Secret Key</label>
+                            <input type="password" class="form-control" name="s3_secret_key" value="{{ config.secret_key }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Region</label>
+                            <input type="text" class="form-control" name="s3_region" value="{{ config.region }}">
+                        </div>
+                    </div>
+                    
+                    <!-- Blob Storage Config -->
+                    <div id="blob-config" class="storage-config" {% if location.type.value != 'blob' %}style="display: none;"{% endif %}>
+                        <div class="mb-3">
+                            <label class="form-label">Connection String</label>
+                            <input type="text" class="form-control" name="blob_connection_string" value="{{ config.connection_string }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Container</label>
+                            <input type="text" class="form-control" name="blob_container" value="{{ config.container }}">
+                        </div>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('storage_locations') }}" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Update Location</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Show/hide storage configuration based on type
+    const storageType = document.getElementById('type');
+    if (storageType) {
+        storageType.addEventListener('change', function() {
+            document.querySelectorAll('.storage-config').forEach(el => {
+                el.style.display = 'none';
+            });
+            
+            const selectedConfig = document.getElementById(`${this.value}-config`);
+            if (selectedConfig) {
+                selectedConfig.style.display = 'block';
+            }
+        });
+    }
+});
+</script>
+{% endblock %}

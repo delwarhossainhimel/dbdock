@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Database Servers</h2>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addServerModal">
+        <i class="bi bi-plus-circle"></i> Add Server
+    </button>
+</div>
+
+<div class="row">
+    {% for server in servers %}
+    <div class="col-md-6 mb-3">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">{{ server.name }}</h5>
+                <p class="card-text">
+                    <strong>Type:</strong> {{ server.type.value }}<br>
+                    <strong>Host:</strong> {{ server.host }}:{{ server.port }}<br>
+                    <strong>Username:</strong> {{ server.username }}
+                </p>
+                <div class="btn-group" role="group">
+                    <button class="btn btn-sm btn-outline-primary test-connection" data-server-id="{{ server.id }}">
+                        Test Connection
+                    </button>
+                        <a href="{{ url_for('edit_server', server_id=server.id) }}" class="btn btn-sm btn-outline-secondary">
+                            Edit
+                        </a>
+                    <button class="btn btn-sm btn-outline-danger delete-server" data-server-id="{{ server.id }}">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Add Server Modal -->
+<div class="modal fade" id="addServerModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Database Server</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" name="type" required>
+                            <option value="mysql">MySQL</option>
+                            <option value="postgres">PostgreSQL</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Host</label>
+                        <input type="text" class="form-control" name="host" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Port</label>
+                        <input type="number" class="form-control" name="port" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" class="form-control" name="username" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" name="password" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Server</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- JavaScript for delete functionality -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Test database connection
+    document.querySelectorAll('.test-connection').forEach(button => {
+        button.addEventListener('click', function() {
+            const serverId = this.dataset.serverId;
+            const button = this;
+            
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Testing...';
+            button.disabled = true;
+            
+            fetch(`/test_connection/${serverId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const alert = document.createElement('div');
+                    alert.className = `alert alert-${data.success ? 'success' : 'danger'} alert-dismissible fade show mt-2`;
+                    alert.innerHTML = `
+                        ${data.message}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    `;
+                    
+                    button.closest('.card-body').appendChild(alert);
+                    
+                    button.innerHTML = 'Test Connection';
+                    button.disabled = false;
+                    
+                    setTimeout(() => {
+                        alert.remove();
+                    }, 5000);
+                });
+        });
+    });
+    
+    // Delete server functionality
+    document.querySelectorAll('.delete-server').forEach(button => {
+        button.addEventListener('click', function() {
+            const serverId = this.dataset.serverId;
+            const serverName = this.closest('.card-body').querySelector('.card-title').textContent;
+            
+            if (confirm(`Are you sure you want to delete server "${serverName}"?`)) {
+                fetch(`/delete_server/${serverId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                        location.reload();
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('Error: ' + error);
+                });
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

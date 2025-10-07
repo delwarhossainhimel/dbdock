@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-4">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ servers }}</h5>
+                <p class="card-text">Database Servers</p>
+                <a href="{{ url_for('database_servers') }}" class="btn btn-primary">Manage</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ locations }}</h5>
+                <p class="card-text">Storage Locations</p>
+                <a href="{{ url_for('storage_locations') }}" class="btn btn-primary">Manage</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">{{ jobs }}</h5>
+                <p class="card-text">Backup Jobs</p>
+                <a href="{{ url_for('backup_jobs') }}" class="btn btn-primary">Manage</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5>Recent Backup History</h5>
+            </div>
+            <div class="card-body">
+                {% if history %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Job</th>
+                                <th>Start Time</th>
+                                <th>End Time</th>
+                                <th>Status</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for record in history %}
+                            <tr>
+                                <td>{{ record.backup_job.name }}</td>
+                                <td>{{ record.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                                <td>{{ record.end_time.strftime('%Y-%m-%d %H:%M:%S') if record.end_time else 'N/A' }}</td>
+                                <td>
+                                    <span class="status-badge status-{{ record.status }}">
+                                        {{ record.status }}
+                                    </span>
+                                </td>
+                                <td>{{ record.message|default('', true) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-center">No backup history found.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

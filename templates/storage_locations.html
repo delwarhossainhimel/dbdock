@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Storage Locations</h2>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addLocationModal">
+        <i class="bi bi-plus-circle"></i> Add Location
+    </button>
+</div>
+
+<div class="row">
+    {% for location in locations %}
+    <div class="col-md-6 mb-3">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">{{ location.name }}</h5>
+                <p class="card-text">
+                    <strong>Type:</strong> {{ location.type.value }}<br>
+                    {% set config = location.config|from_json %}
+                    {% if location.type.value == 'local' %}
+                    <strong>Path:</strong> {{ config.path }}
+                    {% elif location.type.value == 'ftp' %}
+                    <strong>Host:</strong> {{ config.host }}:{{ config.port }}<br>
+                    <strong>Username:</strong> {{ config.username }}<br>
+                    <strong>Passive Mode:</strong> {{ 'Yes' if config.passive_mode else 'No' }}
+                    {% elif location.type.value == 's3' %}
+                    <strong>Bucket:</strong> {{ config.bucket }}<br>
+                    <strong>Region:</strong> {{ config.region }}
+                    {% elif location.type.value == 'blob' %}
+                    <strong>Container:</strong> {{ config.container }}
+                    {% endif %}
+                </p>
+                <div class="btn-group" role="group">
+                    <a href="{{ url_for('edit_location', location_id=location.id) }}" class="btn btn-sm btn-outline-secondary">
+                        Edit
+                    </a>
+                    <button class="btn btn-sm btn-outline-danger delete-location" data-location-id="{{ location.id }}">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+
+<!-- Add Location Modal -->
+<div class="modal fade" id="addLocationModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Storage Location</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form method="POST">
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" name="type" id="type" required>
+                            <option value="local">Local</option>
+                            <option value="ftp">FTP</option>
+                            <option value="s3">S3</option>
+                            <option value="blob">Azure Blob</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Local Storage Config -->
+                    <div id="local-config" class="storage-config">
+                        <div class="mb-3">
+                            <label class="form-label">Path</label>
+                            <input type="text" class="form-control" name="local_path">
+                        </div>
+                    </div>
+                    
+                    <!-- FTP Storage Config -->
+                    <div id="ftp-config" class="storage-config" style="display: none;">
+                        <div class="mb-3">
+                            <label class="form-label">Host</label>
+                            <input type="text" class="form-control" name="ftp_host">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Port</label>
+                            <input type="number" class="form-control" name="ftp_port" value="21">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Username</label>
+                            <input type="text" class="form-control" name="ftp_username">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Password</label>
+                            <input type="password" class="form-control" name="ftp_password">
+                        </div>
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" name="ftp_passive" id="ftp_passive" checked>
+                            <label class="form-check-label" for="ftp_passive">Passive Mode</label>
+                        </div>
+                    </div>
+                    
+                    <!-- S3 Storage Config -->
+                    <div id="s3-config" class="storage-config" style="display: none;">
+                        <div class="mb-3">
+                            <label class="form-label">Bucket</label>
+                            <input type="text" class="form-control" name="s3_bucket">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Access Key</label>
+                            <input type="text" class="form-control" name="s3_access_key">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Secret Key</label>
+                            <input type="password" class="form-control" name="s3_secret_key">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Region</label>
+                            <input type="text" class="form-control" name="s3_region">
+                        </div>
+                    </div>
+                    
+                    <!-- Blob Storage Config -->
+                    <div id="blob-config" class="storage-config" style="display: none;">
+                        <div class="mb-3">
+                            <label class="form-label">Connection String</label>
+                            <input type="text" class="form-control" name="blob_connection_string">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Container</label>
+                            <input type="text" class="form-control" name="blob_container">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Location</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- JavaScript for delete functionality -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Show/hide storage configuration based on type
+    const storageType = document.getElementById('type');
+    if (storageType) {
+        storageType.addEventListener('change', function() {
+            document.querySelectorAll('.storage-config').forEach(el => {
+                el.style.display = 'none';
+            });
+            
+            const selectedConfig = document.getElementById(`${this.value}-config`);
+            if (selectedConfig) {
+                selectedConfig.style.display = 'block';
+            }
+        });
+        
+        // Trigger change event on page load
+        storageType.dispatchEvent(new Event('change'));
+    }
+    
+    // Delete location functionality
+    document.querySelectorAll('.delete-location').forEach(button => {
+        button.addEventListener('click', function() {
+            const locationId = this.dataset.locationId;
+            const locationName = this.closest('.card-body').querySelector('.card-title').textContent;
+            
+            if (confirm(`Are you sure you want to delete storage location "${locationName}"?`)) {
+                fetch(`/delete_location/${locationId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                        location.reload();
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('Error: ' + error);
+                });
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

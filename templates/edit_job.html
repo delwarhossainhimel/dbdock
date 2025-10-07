@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5>Edit Backup Job</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('update_job', job_id=job.id) }}">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" name="name" value="{{ job.name }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <textarea class="form-control" name="description">{{ job.description }}</textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Database Server</label>
+                        <select class="form-select" name="database_server" id="database_server" required>
+                            <option value="">Select a server</option>
+                            {% for server in servers %}
+                            <option value="{{ server.id }}" {% if server.id == job.database_server_id %}selected{% endif %}>
+                                {{ server.name }} ({{ server.type.value }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Databases</label>
+                        <div id="database-list" class="border p-2" style="max-height: 200px; overflow-y: auto;">
+                            <p class="text-center text-muted">Select a database server first</p>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Storage Location</label>
+                        <select class="form-select" name="storage_location" required>
+                            <option value="">Select a storage location</option>
+                            {% for location in locations %}
+                            <option value="{{ location.id }}" {% if location.id == job.storage_location_id %}selected{% endif %}>
+                                {{ location.name }} ({{ location.type.value }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Folder Path</label>
+                        <input type="text" class="form-control" name="folder_path" value="{{ job.folder_path }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Schedule Type</label>
+                        <select class="form-select" name="schedule_type" id="schedule_type" required>
+                            <option value="daily" {% if job.schedule_type == 'daily' %}selected{% endif %}>Daily</option>
+                            <option value="weekly" {% if job.schedule_type == 'weekly' %}selected{% endif %}>Weekly</option>
+                            <option value="monthly" {% if job.schedule_type == 'monthly' %}selected{% endif %}>Monthly</option>
+                        </select>
+                    </div>
+                    
+                    <!-- Daily Options -->
+                    <div id="daily-options" class="schedule-option" {% if job.schedule_type != 'daily' %}style="display: none;"{% endif %}>
+                        <div class="mb-3">
+                            <label class="form-label">Time</label>
+                            {% set daily_time = job.cron_expression.split()[1] + ':' + job.cron_expression.split()[0] %}
+                            <input type="time" class="form-control" name="daily_time" value="{{ daily_time }}">
+                        </div>
+                    </div>
+                    
+                    <!-- Weekly Options -->
+                    <div id="weekly-options" class="schedule-option" {% if job.schedule_type != 'weekly' %}style="display: none;"{% endif %}>
+                        <div class="mb-3">
+                            <label class="form-label">Day of Week</label>
+                            <select class="form-select" name="weekly_day">
+                                <option value="0" {% if job.cron_expression.split()[4] == '0' %}selected{% endif %}>Sunday</option>
+                                <option value="1" {% if job.cron_expression.split()[4] == '1' %}selected{% endif %}>Monday</option>
+                                <option value="2" {% if job.cron_expression.split()[4] == '2' %}selected{% endif %}>Tuesday</option>
+                                <option value="3" {% if job.cron_expression.split()[4] == '3' %}selected{% endif %}>Wednesday</option>
+                                <option value="4" {% if job.cron_expression.split()[4] == '4' %}selected{% endif %}>Thursday</option>
+                                <option value="5" {% if job.cron_expression.split()[4] == '5' %}selected{% endif %}>Friday</option>
+                                <option value="6" {% if job.cron_expression.split()[4] == '6' %}selected{% endif %}>Saturday</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Time</label>
+                            {% set weekly_time = job.cron_expression.split()[1] + ':' + job.cron_expression.split()[0] %}
+                            <input type="time" class="form-control" name="weekly_time" value="{{ weekly_time }}">
+                        </div>
+                    </div>
+                    
+                    <!-- Monthly Options -->
+                    <div id="monthly-options" class="schedule-option" {% if job.schedule_type != 'monthly' %}style="display: none;"{% endif %}>
+                        <div class="mb-3">
+                            <label class="form-label">Day of Month</label>
+                            <input type="number" class="form-control" name="monthly_day" min="1" max="31" value="{{ job.cron_expression.split()[2] }}">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Time</label>
+                            {% set monthly_time = job.cron_expression.split()[1] + ':' + job.cron_expression.split()[0] %}
+                            <input type="time" class="form-control" name="monthly_time" value="{{ monthly_time }}">
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Retention Policy</label>
+                        <input type="number" class="form-control" name="retention_policy" min="1" value="{{ job.retention_policy }}" required>
+                        <div class="form-text">Number of {{ job.schedule_type }} cycles to keep</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Notification Email</label>
+                        <input type="email" class="form-control" name="notification_email" value="{{ job.notification_email }}">
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('backup_jobs') }}" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Update Job</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Load databases when page loads (if server is already selected)
+    const serverSelect = document.getElementById('database_server');
+    const selectedServerId = serverSelect.value;
+    
+    if (selectedServerId) {
+        loadDatabases(selectedServerId);
+    }
+    
+    // Load databases when server selection changes
+    serverSelect.addEventListener('change', function() {
+        const serverId = this.value;
+        loadDatabases(serverId);
+    });
+    
+    function loadDatabases(serverId) {
+        const databaseList = document.getElementById('database-list');
+        
+        if (!serverId) {
+            databaseList.innerHTML = '<p class="text-center text-muted">Select a database server first</p>';
+            return;
+        }
+        
+        databaseList.innerHTML = '<div class="text-center my-3"><div class="spinner-border" role="status"></div></div>';
+        
+        fetch(`/get_databases/${serverId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    databaseList.innerHTML = '';
+                    
+                    data.databases.forEach(db => {
+                        const checkbox = document.createElement('div');
+                        checkbox.className = 'form-check';
+                        const isChecked = {{ selected_databases | tojson }}.includes(db);
+                        checkbox.innerHTML = `
+                            <input class="form-check-input" type="checkbox" name="databases" value="${db}" id="db-${db}" ${isChecked ? 'checked' : ''}>
+                            <label class="form-check-label" for="db-${db}">${db}</label>
+                        `;
+                        databaseList.appendChild(checkbox);
+                    });
+                    
+                    // Add select all option
+                    const selectAll = document.createElement('div');
+                    selectAll.className = 'form-check mt-2';
+                    selectAll.innerHTML = `
+                        <input class="form-check-input" type="checkbox" id="select-all">
+                        <label class="form-check-label fw-bold" for="select-all">Select All</label>
+                    `;
+                    databaseList.appendChild(selectAll);
+                    
+                    document.getElementById('select-all').addEventListener('click', function() {
+                        const checkboxes = databaseList.querySelectorAll('input[type="checkbox"]:not(#select-all)');
+                        checkboxes.forEach(checkbox => {
+                            checkbox.checked = this.checked;
+                        });
+                    });
+                } else {
+                    databaseList.innerHTML = `<div class="alert alert-danger">${data.message}</div>`;
+                }
+            });
+    }
+    
+    // Show/hide schedule options based on selection
+    const scheduleType = document.getElementById('schedule_type');
+    if (scheduleType) {
+        scheduleType.addEventListener('change', function() {
+            document.querySelectorAll('.schedule-option').forEach(el => {
+                el.style.display = 'none';
+            });
+            
+            const selectedOption = document.getElementById(`${this.value}-options`);
+            if (selectedOption) {
+                selectedOption.style.display = 'block';
+            }
+        });
+    }
+});
+</script>
+{% endblock %}
