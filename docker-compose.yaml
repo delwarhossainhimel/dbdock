@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  dbdock:
+    image: dbdock:latest
+    container_name: dbdock
+    environment:
+      ADMIN_USER: "admin"
+      ADMIN_PASS: "password123"
+      SECRET_KEY: "your-very-secret-key"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./app/instances:/app/instances  # Persist dbDock.db here

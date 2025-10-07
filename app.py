@@ -3,24 +3,23 @@ from models import db, DatabaseServer, StorageLocation, BackupJob, BackupHistory
 # In your main application
 from backup_scripts import postgres_backup, mysql_backup
 from werkzeug.security import check_password_hash, generate_password_hash
+from dotenv import load_dotenv
 from scheduler import init_scheduler, schedule_backup_job, unschedule_backup_job
 import json
 import os
 import fcntl
 import sys
 from datetime import datetime
-
+load_dotenv()
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///dbDock.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'your-secret-key-here'
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
 # Example user storage (you can replace this with a DB)
 users = {
-    "admin": generate_password_hash("password123"),
-    "tanvir": generate_password_hash("mypassword")
+    os.getenv('ADMIN_USER'): generate_password_hash(os.getenv('ADMIN_PASS'))
 }
-
 # Only check for multiple instances when running directly
 if __name__ == '__main__' or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
     instance_lock_file = None
@@ -82,10 +81,17 @@ with app.app_context():
         
     else:
         print("❌ Scheduler failed to initialize completely")
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "message": "Application is running fine"
+    }), 200
+
 @app.before_request
 def require_login():
     # Allow login and static files
-    allowed_routes = ['login', 'static']
+    allowed_routes = ['login', 'static', 'health_check']
     if 'user' not in session and request.endpoint not in allowed_routes:
         return redirect(url_for('login'))
     
@@ -109,7 +115,6 @@ def logout():
     session.pop('user', None)
     flash("You have been logged out.", "info")
     return redirect(url_for('login'))
-
 @app.route('/')
 def dashboard():
     if 'user' not in session:

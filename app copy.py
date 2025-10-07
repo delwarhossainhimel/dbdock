@@ -1,24 +1,25 @@
 from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
 from models import db, DatabaseServer, StorageLocation, BackupJob, BackupHistory, DatabaseType, StorageType
+# In your main application
+from backup_scripts import postgres_backup, mysql_backup
 from werkzeug.security import check_password_hash, generate_password_hash
+from dotenv import load_dotenv
 from scheduler import init_scheduler, schedule_backup_job, unschedule_backup_job
 import json
 import os
 import fcntl
 import sys
 from datetime import datetime
-
+load_dotenv()
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///dbDock.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'your-secret-key-here'
+#app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
 # Example user storage (you can replace this with a DB)
 users = {
-    "admin": generate_password_hash("password123"),
-    "tanvir": generate_password_hash("mypassword")
+    os.getenv('ADMIN_USER'): generate_password_hash(os.getenv('ADMIN_PASS'))
 }
-
 # Only check for multiple instances when running directly
 if __name__ == '__main__' or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
     instance_lock_file = None
