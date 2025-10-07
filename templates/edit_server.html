@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5>Edit Database Server</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('update_server', server_id=server.id) }}">
+                    <div class="mb-3">
+                        <label class="form-label">Name</label>
+                        <input type="text" class="form-control" name="name" value="{{ server.name }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Type</label>
+                        <select class="form-select" name="type" required>
+                            <option value="mysql" {% if server.type.value == 'mysql' %}selected{% endif %}>MySQL</option>
+                            <option value="postgres" {% if server.type.value == 'postgres' %}selected{% endif %}>PostgreSQL</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Host</label>
+                        <input type="text" class="form-control" name="host" value="{{ server.host }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Port</label>
+                        <input type="number" class="form-control" name="port" value="{{ server.port }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Username</label>
+                        <input type="text" class="form-control" name="username" value="{{ server.username }}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" name="password" placeholder="Leave blank to keep current password">
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('database_servers') }}" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Update Server</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

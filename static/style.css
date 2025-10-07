@@ -1,0 +1,42 @@
+body {
+    background-color: #f8f9fa;
+}
+
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    margin-bottom: 1.5rem;
+}
+
+.status-badge {
+    padding: 0.35em 0.65em;
+    font-size: 0.75em;
+    font-weight: 700;
+    border-radius: 0.25rem;
+}
+
+.status-success {
+    background-color: #d1e7dd;
+    color: #0f5132;
+}
+
+.status-failed {
+    background-color: #f8d7da;
+    color: #842029;
+}
+
+.status-running {
+    background-color: #fff3cd;
+    color: #664d03;
+}
+
+.form-section {
+    background-color: white;
+    padding: 1.5rem;
+    border-radius: 0.375rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+}
+.navbar .btn-outline-danger {
+    border-width: 1px;
+    padding: 3px 10px;
+}
