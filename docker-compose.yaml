@@ -11,4 +11,4 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./app/instances:/app/instances  # Persist dbDock.db here
+      - ./app/instance:/app/instance  # Persist dbDock.db here
