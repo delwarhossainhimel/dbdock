@@ -1,4 +1,5 @@
 # dbDock – Database Backup & Storage Tool
+<img width="1919" height="960" alt="image" src="https://github.com/user-attachments/assets/9f0e08c3-fae1-4c5d-9557-a0fe386d7f9c" />
 
 dbDock is an open-source Python application designed to simplify database backups for **MySQL** and **PostgreSQL**.  
 It allows you to securely back up databases and store them in multiple destinations such as **local storage**, **blob storage**, and **FTP servers**.
