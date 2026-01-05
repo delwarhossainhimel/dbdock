@@ -46,4 +46,10 @@ echo "Final database location: $DB_FILE"
 echo "Database size: $(du -h "$DB_FILE" 2>/dev/null | cut -f1 || echo '0B')"
 
 echo "Starting application..."
-exec gunicorn -w 1 -b 0.0.0.0:5000 app:app
+#exec gunicorn -w 1 -b 0.0.0.0:5000 app:app
+exec gunicorn \
+  -w 1 \
+  -b 0.0.0.0:5000 \
+  --timeout 18000 \
+  --graceful-timeout 18000 \
+  app:app
