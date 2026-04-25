@@ -4,8 +4,9 @@ import json
 from datetime import datetime
 from .storage_providers import get_storage_provider
 from .utils import create_job_tmp_directory, cleanup_job_tmp_directory, create_full_folder_path
+from job_schedules import get_enabled_schedule_types, get_schedule_retention, normalize_schedule_config
 
-def postgres_backup(server, databases, location, folder_path, schedule_type, job_id=None):
+def postgres_backup(server, databases, location, folder_path, schedule_types, job_id=None):
     """
     PostgreSQL backup with job-specific temporary directory
     """
@@ -13,12 +14,11 @@ def postgres_backup(server, databases, location, folder_path, schedule_type, job
     job_tmp_dir = create_job_tmp_directory(job_id)
     
     try:
-        # Create the full folder path with schedule type as subfolder
-        full_folder_path = create_full_folder_path(folder_path, schedule_type)
-        print(f"Full backup path: {full_folder_path}")
+        print(f"Backup targets: {schedule_types}")
         print(f"Job temporary directory: {job_tmp_dir}")
         
         backup_files = []
+        database_results = []
         
         for database in databases:
             # Generate filename with new format: database_YYYY-MM-DD.sql.gz
@@ -66,37 +66,61 @@ def postgres_backup(server, databases, location, folder_path, schedule_type, job
                     # Verify file was created
                     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
                         backup_files.append((filepath, filename))
-                        print(f"✓ Created PostgreSQL backup: {filepath} ({os.path.getsize(filepath)} bytes)")
+                        file_size = os.path.getsize(filepath)
+                        print(f"✓ Created PostgreSQL backup: {filepath} ({file_size} bytes)")
+                        database_results.append({
+                            'database': database,
+                            'status': 'success',
+                            'message': 'Backup completed successfully',
+                            'file_size': file_size,
+                        })
                     else:
-                        return False, f"Backup file was not created properly for database {database}", None, 0
+                        database_results.append({
+                            'database': database,
+                            'status': 'failed',
+                            'message': f"Backup file was not created properly for database {database}",
+                            'file_size': 0,
+                        })
                 else:
                     # Get error message from pg_dump
                     _, stderr = pg_dump_process.communicate()
                     error_msg = stderr.decode() if stderr else "Unknown error"
-                    return False, f"PostgreSQL backup failed for database {database}: {error_msg}", None, 0
+                    database_results.append({
+                        'database': database,
+                        'status': 'failed',
+                        'message': f"PostgreSQL backup failed for database {database}: {error_msg}",
+                        'file_size': 0,
+                    })
                     
             except Exception as e:
-                return False, f"Error during backup process for database {database}: {str(e)}", None, 0
-        
-        if not backup_files:
-            return False, "No backup files were created", None, 0
-        
-        # Upload to storage location using the storage provider
-        result = upload_to_storage(location, full_folder_path, backup_files)
-        
-        # Apply retention policy after successful backup
-        if result[0]:  # If backup was successful
-            apply_retention_policy(location, folder_path, schedule_type, backup_files)
+                database_results.append({
+                    'database': database,
+                    'status': 'failed',
+                    'message': f"Error during backup process for database {database}: {str(e)}",
+                    'file_size': 0,
+                })
+
+        if backup_files:
+            result = upload_backups_for_schedules(location, folder_path, schedule_types, backup_files)
+        else:
+            result = (False, "No backup files were created", None, 0)
         
         # Clean up only this job's temporary directory
         cleanup_job_tmp_directory(job_tmp_dir)
-        
-        return result
+
+        failed_results = [item for item in database_results if item['status'] != 'success']
+        if failed_results and result[0]:
+            return False, build_partial_failure_message(database_results), result[2], result[3], database_results
+
+        if not result[0]:
+            return False, result[1], result[2], result[3], database_results
+
+        return True, result[1], result[2], result[3], database_results
             
     except Exception as e:
         # Clean up on error too - but only this job's directory
         cleanup_job_tmp_directory(job_tmp_dir)
-        return False, str(e), None, 0
+        return False, str(e), None, 0, []
 
 def upload_to_storage(location, folder_path, backup_files):
     """Upload backup files using the appropriate storage provider"""
@@ -113,13 +137,36 @@ def upload_to_storage(location, folder_path, backup_files):
     except Exception as e:
         return False, str(e), None, 0
 
-def apply_retention_policy(location, base_folder_path, schedule_type, current_backup_files):
+def upload_backups_for_schedules(location, base_folder_path, schedule_types, backup_files):
+    uploaded_paths = []
+    total_size = 0
+
+    for schedule_type in schedule_types:
+        full_folder_path = create_full_folder_path(base_folder_path, schedule_type)
+        print(f"Full backup path: {full_folder_path}")
+
+        result = upload_to_storage(location, full_folder_path, backup_files)
+        if not result[0]:
+            return result
+
+        uploaded_paths.extend([path for path in (result[2] or "").split(";") if path])
+        total_size += result[3] or 0
+        apply_retention_policy(location, base_folder_path, schedule_type)
+
+    return True, "Backup completed successfully", ";".join(uploaded_paths), total_size
+
+def build_partial_failure_message(database_results):
+    succeeded = len([item for item in database_results if item['status'] == 'success'])
+    failed = len(database_results) - succeeded
+    return f"Backup completed with partial failures. {succeeded} succeeded, {failed} failed."
+
+def apply_retention_policy(location, base_folder_path, schedule_type):
     """
     Apply retention policy by deleting old backup files
     """
     try:
         from app import app
-        from models import BackupJob, BackupHistory
+        from models import BackupJob
         from datetime import datetime, timedelta
         
         # Create the full folder path for retention policy checks
@@ -136,17 +183,36 @@ def apply_retention_policy(location, base_folder_path, schedule_type, current_ba
             for job in jobs:
                 print(f"Applying retention policy for job: {job.name}")
                 
-                # Calculate cutoff date based on retention policy and schedule type
-                if job.schedule_type == 'daily':
-                    cutoff_date = datetime.now() - timedelta(days=job.retention_policy)
-                elif job.schedule_type == 'weekly':
-                    cutoff_date = datetime.now() - timedelta(weeks=job.retention_policy)
-                elif job.schedule_type == 'monthly':
-                    cutoff_date = datetime.now() - timedelta(days=30 * job.retention_policy)
+                job_schedule_types = get_enabled_schedule_types(
+                    normalize_schedule_config(
+                        job.schedule_config,
+                        job.schedule_type,
+                        job.cron_expression,
+                        fallback_retention=job.retention_policy,
+                    )
+                )
+
+                if schedule_type not in job_schedule_types:
+                    continue
+
+                retention_value = get_schedule_retention(
+                    job.schedule_config,
+                    schedule_type,
+                    fallback_retention=job.retention_policy or 1,
+                )
+
+                if schedule_type == 'daily':
+                    cutoff_date = datetime.now() - timedelta(days=retention_value)
+                elif schedule_type == 'weekly':
+                    cutoff_date = datetime.now() - timedelta(weeks=retention_value)
+                elif schedule_type == 'monthly':
+                    cutoff_date = datetime.now() - timedelta(days=30 * retention_value)
+                elif schedule_type == 'yearly':
+                    cutoff_date = datetime.now() - timedelta(days=365 * retention_value)
                 else:
                     continue
                 
-                print(f"Cutoff date: {cutoff_date}, Retention: {job.retention_policy} {job.schedule_type}(s)")
+                print(f"Cutoff date: {cutoff_date}, Retention: {retention_value} {schedule_type}(s)")
                 
                 # Get databases for this job
                 databases = json.loads(job.databases)

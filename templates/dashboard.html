@@ -1,31 +1,39 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="row">
+<!-- <section class="dashboard-hero">
+    <div class="dashboard-hero-copy">
+        <p class="dashboard-kicker">Control Center</p>
+        <h1 class="dashboard-title">Keep every backup job visible, scheduled, and under control.</h1>
+        <p class="dashboard-subtitle">Monitor your database servers, storage targets, and recent backup activity from one place.</p>
+    </div>
+</section> -->
+
+<div class="row dashboard-stats">
     <div class="col-md-4">
-        <div class="card text-center">
+        <div class="card dashboard-stat-card">
             <div class="card-body">
-                <h5 class="card-title">{{ servers }}</h5>
-                <p class="card-text">Database Servers</p>
-                <a href="{{ url_for('database_servers') }}" class="btn btn-primary">Manage</a>
+                <p class="dashboard-stat-label">Database Servers</p>
+                <h5 class="card-title dashboard-stat-value">{{ servers }}</h5>
+                <a href="{{ url_for('database_servers') }}" class="btn btn-primary">Manage Servers</a>
             </div>
         </div>
     </div>
     <div class="col-md-4">
-        <div class="card text-center">
+        <div class="card dashboard-stat-card">
             <div class="card-body">
-                <h5 class="card-title">{{ locations }}</h5>
-                <p class="card-text">Storage Locations</p>
-                <a href="{{ url_for('storage_locations') }}" class="btn btn-primary">Manage</a>
+                <p class="dashboard-stat-label">Storage Locations</p>
+                <h5 class="card-title dashboard-stat-value">{{ locations }}</h5>
+                <a href="{{ url_for('storage_locations') }}" class="btn btn-primary">Manage Storage</a>
             </div>
         </div>
     </div>
     <div class="col-md-4">
-        <div class="card text-center">
+        <div class="card dashboard-stat-card">
             <div class="card-body">
-                <h5 class="card-title">{{ jobs }}</h5>
-                <p class="card-text">Backup Jobs</p>
-                <a href="{{ url_for('backup_jobs') }}" class="btn btn-primary">Manage</a>
+                <p class="dashboard-stat-label">Active Backup Jobs</p>
+                <h5 class="card-title dashboard-stat-value">{{ jobs }}</h5>
+                <a href="{{ url_for('backup_jobs') }}" class="btn btn-primary">Manage Jobs</a>
             </div>
         </div>
     </div>
@@ -33,14 +41,17 @@
 
 <div class="row mt-4">
     <div class="col-12">
-        <div class="card">
-            <div class="card-header">
-                <h5>Recent Backup History</h5>
+        <div class="card dashboard-history-card">
+            <div class="card-header dashboard-section-header">
+                <div>
+                    <p class="dashboard-section-kicker">Operations</p>
+                    <h5>Recent Backup History</h5>
+                </div>
             </div>
             <div class="card-body">
                 {% if history %}
                 <div class="table-responsive">
-                    <table class="table table-striped">
+                    <table class="table table-striped dashboard-table">
                         <thead>
                             <tr>
                                 <th>Job</th>
@@ -48,6 +59,7 @@
                                 <th>End Time</th>
                                 <th>Status</th>
                                 <th>Message</th>
+                                <th>Log</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -62,6 +74,13 @@
                                     </span>
                                 </td>
                                 <td>{{ record.message|default('', true) }}</td>
+                                <td>
+                                    {% if record.log_path %}
+                                    <a href="{{ url_for('view_backup_log', history_id=record.id) }}" class="btn btn-outline-primary btn-sm">View Log</a>
+                                    {% else %}
+                                    <span class="text-muted">N/A</span>
+                                    {% endif %}
+                                </td>
                             </tr>
                             {% endfor %}
                         </tbody>

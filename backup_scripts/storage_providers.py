@@ -5,6 +5,7 @@ import ftplib
 import socket
 from urllib.parse import urlparse
 from datetime import datetime
+from .utils import normalize_relative_folder_path
 
 class StorageProvider:
     """Base class for all storage providers"""
@@ -17,13 +18,29 @@ class StorageProvider:
 
 class LocalStorageProvider(StorageProvider):
     """Local file system storage"""
+
+    def _build_target_dir(self, base_path, folder_path):
+        normalized_base_path = os.path.abspath(base_path)
+        normalized_folder_path = normalize_relative_folder_path(folder_path)
+
+        if normalized_folder_path:
+            target_dir = os.path.abspath(
+                os.path.join(normalized_base_path, normalized_folder_path)
+            )
+        else:
+            target_dir = normalized_base_path
+
+        if os.path.commonpath([normalized_base_path, target_dir]) != normalized_base_path:
+            raise ValueError("Backup folder path must stay inside the configured storage location")
+
+        return target_dir
     
     def upload_files(self, config, folder_path, backup_files):
         total_size = 0
         uploaded_files = []
         
         try:
-            target_dir = os.path.join(config['path'], folder_path)
+            target_dir = self._build_target_dir(config['path'], folder_path)
             os.makedirs(target_dir, exist_ok=True)
             
             for source_path, filename in backup_files:
@@ -45,7 +62,7 @@ class LocalStorageProvider(StorageProvider):
     def delete_old_files(self, config, folder_path, database, cutoff_date):
         deleted_count = 0
         try:
-            target_dir = os.path.join(config['path'], folder_path)
+            target_dir = self._build_target_dir(config['path'], folder_path)
             
             if not os.path.exists(target_dir):
                 return 0

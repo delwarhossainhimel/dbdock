@@ -13,19 +13,25 @@
     <div class="col-12 mb-3">
         <div class="card">
             <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start">
+                <div class="d-flex justify-content-between align-items-start gap-3">
                     <div>
                         <h5 class="card-title">{{ job.name }}</h5>
-                        <p class="card-text mb-1">
+                        <p class="card-text mb-2">
                             <strong>Database Server:</strong> {{ job.database_server.name }}<br>
                             <strong>Storage Location:</strong> {{ job.storage_location.name }}<br>
-                            <strong>Schedule:</strong> {{ job.schedule_type }} ({{ job.cron_expression }})<br>
-                            <strong>Retention:</strong> {{ job.retention_policy }} {{ job.schedule_type }}(s)<br>
-                            <strong>Status:</strong> 
+                            <strong>Status:</strong>
                             <span class="badge bg-{{ 'success' if job.is_active else 'secondary' }}">
                                 {{ 'Active' if job.is_active else 'Inactive' }}
                             </span>
                         </p>
+                        <div>
+                            <strong>Schedules:</strong>
+                            <ul class="mb-0 mt-1">
+                                {% for entry in get_schedule_entries(job.normalized_schedule_config) %}
+                                <li>{{ entry.summary }}{% if entry.cron_expression %} ({{ entry.cron_expression }}){% endif %}</li>
+                                {% endfor %}
+                            </ul>
+                        </div>
                     </div>
                     <div class="btn-group-vertical" role="group">
                         <button class="btn btn-sm btn-outline-primary run-job" data-job-id="{{ job.id }}">
@@ -48,7 +54,6 @@
     {% endfor %}
 </div>
 
-<!-- Add Job Modal -->
 <div class="modal fade" id="addJobModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -77,8 +82,8 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Databases</label>
-                        <div id="database-list" class="border p-2" style="max-height: 200px; overflow-y: auto;">
-                            <p class="text-center text-muted">Select a database server first</p>
+                        <div id="database-list" class="border p-2 rounded" style="max-height: 200px; overflow-y: auto;">
+                            <p class="text-center text-muted mb-0">Select a database server first</p>
                         </div>
                     </div>
                     <div class="mb-3">
@@ -94,63 +99,83 @@
                         <label class="form-label">Folder Path</label>
                         <input type="text" class="form-control" name="folder_path" required>
                     </div>
+
                     <div class="mb-3">
-                        <label class="form-label">Schedule Type</label>
-                        <select class="form-select" name="schedule_type" id="schedule_type" required>
-                            <option value="daily">Daily</option>
-                            <option value="weekly">Weekly</option>
-                            <option value="monthly">Monthly</option>
-                        </select>
-                    </div>
-                    
-                    <!-- Daily Options -->
-                    <div id="daily-options" class="schedule-option">
-                        <div class="mb-3">
-                            <label class="form-label">Time</label>
-                            <input type="time" class="form-control" name="daily_time" value="00:00">
+                        <label class="form-label">Schedules</label>
+                        <div class="border rounded p-3">
+                            <div class="form-check mb-3">
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="daily" id="schedule-daily">
+                                <label class="form-check-label fw-semibold" for="schedule-daily">Daily</label>
+                            </div>
+                            <div class="schedule-option ps-4 pb-3" data-schedule="daily" style="display: none;">
+                                <label class="form-label">Daily Time</label>
+                                <input type="time" class="form-control" name="daily_time" value="00:00">
+                                <label class="form-label mt-3">Daily Retention</label>
+                                <input type="number" class="form-control" name="daily_retention" min="1" value="1">
+                            </div>
+
+                            <div class="form-check mb-3">
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="weekly" id="schedule-weekly">
+                                <label class="form-check-label fw-semibold" for="schedule-weekly">Weekly</label>
+                            </div>
+                            <div class="schedule-option ps-4 pb-3" data-schedule="weekly" style="display: none;">
+                                <label class="form-label">Day of Week</label>
+                                <select class="form-select mb-3" name="weekly_day">
+                                    <option value="0">Sunday</option>
+                                    <option value="1">Monday</option>
+                                    <option value="2">Tuesday</option>
+                                    <option value="3">Wednesday</option>
+                                    <option value="4">Thursday</option>
+                                    <option value="5">Friday</option>
+                                    <option value="6">Saturday</option>
+                                </select>
+                                <label class="form-label">Weekly Time</label>
+                                <input type="time" class="form-control" name="weekly_time" value="00:00">
+                                <label class="form-label mt-3">Weekly Retention</label>
+                                <input type="number" class="form-control" name="weekly_retention" min="1" value="1">
+                            </div>
+
+                            <div class="form-check mb-3">
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="monthly" id="schedule-monthly">
+                                <label class="form-check-label fw-semibold" for="schedule-monthly">Monthly</label>
+                            </div>
+                            <div class="schedule-option ps-4 pb-3" data-schedule="monthly" style="display: none;">
+                                <label class="form-label">Day of Month</label>
+                                <input type="number" class="form-control mb-3" name="monthly_day" min="1" max="31" value="1">
+                                <label class="form-label">Monthly Time</label>
+                                <input type="time" class="form-control" name="monthly_time" value="00:00">
+                                <label class="form-label mt-3">Monthly Retention</label>
+                                <input type="number" class="form-control" name="monthly_retention" min="1" value="1">
+                            </div>
+
+                            <div class="form-check mb-3">
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="yearly" id="schedule-yearly">
+                                <label class="form-check-label fw-semibold" for="schedule-yearly">Yearly</label>
+                            </div>
+                            <div class="schedule-option ps-4" data-schedule="yearly" style="display: none;">
+                                <label class="form-label">Month</label>
+                                <select class="form-select mb-3" name="yearly_month">
+                                    {% for month_number, month_name in [('1', 'January'), ('2', 'February'), ('3', 'March'), ('4', 'April'), ('5', 'May'), ('6', 'June'), ('7', 'July'), ('8', 'August'), ('9', 'September'), ('10', 'October'), ('11', 'November'), ('12', 'December')] %}
+                                    <option value="{{ month_number }}">{{ month_name }}</option>
+                                    {% endfor %}
+                                </select>
+                                <label class="form-label">Day of Month</label>
+                                <input type="number" class="form-control mb-3" name="yearly_day" min="1" max="31" value="1">
+                                <label class="form-label">Yearly Time</label>
+                                <input type="time" class="form-control" name="yearly_time" value="00:00">
+                                <label class="form-label mt-3">Yearly Retention</label>
+                                <input type="number" class="form-control" name="yearly_retention" min="1" value="1">
+                            </div>
                         </div>
-                    </div>
-                    
-                    <!-- Weekly Options -->
-                    <div id="weekly-options" class="schedule-option" style="display: none;">
-                        <div class="mb-3">
-                            <label class="form-label">Day of Week</label>
-                            <select class="form-select" name="weekly_day">
-                                <option value="0">Sunday</option>
-                                <option value="1">Monday</option>
-                                <option value="2">Tuesday</option>
-                                <option value="3">Wednesday</option>
-                                <option value="4">Thursday</option>
-                                <option value="5">Friday</option>
-                                <option value="6">Saturday</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Time</label>
-                            <input type="time" class="form-control" name="weekly_time" value="00:00">
-                        </div>
-                    </div>
-                    
-                    <!-- Monthly Options -->
-                    <div id="monthly-options" class="schedule-option" style="display: none;">
-                        <div class="mb-3">
-                            <label class="form-label">Day of Month</label>
-                            <input type="number" class="form-control" name="monthly_day" min="1" max="31" value="1">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Time</label>
-                            <input type="time" class="form-control" name="monthly_time" value="00:00">
-                        </div>
-                    </div>
-                    
-                    <div class="mb-3">
-                        <label class="form-label">Retention Policy</label>
-                        <input type="number" class="form-control" name="retention_policy" min="1" required>
-                        <div class="form-text">Number of backup cycles to keep</div>
+                        <div class="form-text">You can enable one or many schedules in the same job.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Notification Email</label>
-                        <input type="email" class="form-control" name="notification_email">
+                        <div class="input-group">
+                            <input type="email" class="form-control" name="notification_email" id="notification_email">
+                            <button type="button" class="btn btn-outline-primary" id="send-test-email">Send Test Email</button>
+                        </div>
+                        <div class="form-text">Uses the SMTP settings from `.env` and sends to this receiver email.</div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -162,173 +187,214 @@
     </div>
 </div>
 
-<!-- JavaScript for job actions -->
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    // Load databases when server is selected
     const serverSelect = document.getElementById('database_server');
+    const databaseList = document.getElementById('database-list');
+
+    function attachSelectAllHandler(container) {
+        const selectAll = container.querySelector('#select-all');
+        if (!selectAll) {
+            return;
+        }
+
+        selectAll.addEventListener('click', function() {
+            const checkboxes = container.querySelectorAll('input[type="checkbox"][name="databases"]');
+            checkboxes.forEach((checkbox) => {
+                checkbox.checked = this.checked;
+            });
+        });
+    }
+
+    function loadDatabases(serverId) {
+        if (!serverId) {
+            databaseList.innerHTML = '<p class="text-center text-muted mb-0">Select a database server first</p>';
+            return;
+        }
+
+        databaseList.innerHTML = '<div class="text-center my-3"><div class="spinner-border" role="status"></div></div>';
+
+        fetch(`/get_databases/${serverId}`)
+            .then((response) => response.json())
+            .then((data) => {
+                if (!data.success) {
+                    databaseList.innerHTML = `<div class="alert alert-danger mb-0">${data.message}</div>`;
+                    return;
+                }
+
+                databaseList.innerHTML = '';
+
+                data.databases.forEach((db) => {
+                    const checkbox = document.createElement('div');
+                    checkbox.className = 'form-check';
+                    checkbox.innerHTML = `
+                        <input class="form-check-input" type="checkbox" name="databases" value="${db}" id="db-${db}">
+                        <label class="form-check-label" for="db-${db}">${db}</label>
+                    `;
+                    databaseList.appendChild(checkbox);
+                });
+
+                const selectAll = document.createElement('div');
+                selectAll.className = 'form-check mt-2';
+                selectAll.innerHTML = `
+                    <input class="form-check-input" type="checkbox" id="select-all">
+                    <label class="form-check-label fw-bold" for="select-all">Select All</label>
+                `;
+                databaseList.appendChild(selectAll);
+                attachSelectAllHandler(databaseList);
+            });
+    }
+
     if (serverSelect) {
         serverSelect.addEventListener('change', function() {
-            const serverId = this.value;
-            const databaseList = document.getElementById('database-list');
-            
-            if (!serverId) {
-                databaseList.innerHTML = '<p class="text-center text-muted">Select a database server first</p>';
+            loadDatabases(this.value);
+        });
+    }
+
+    document.querySelectorAll('.schedule-toggle').forEach((toggle) => {
+        const scheduleName = toggle.value;
+        const panel = document.querySelector(`.schedule-option[data-schedule="${scheduleName}"]`);
+
+        const syncPanel = () => {
+            if (panel) {
+                panel.style.display = toggle.checked ? 'block' : 'none';
+            }
+        };
+
+        toggle.addEventListener('change', syncPanel);
+        syncPanel();
+    });
+
+    document.querySelectorAll('.run-job').forEach((button) => {
+        button.addEventListener('click', function() {
+            const jobId = this.dataset.jobId;
+            const jobName = this.closest('.card-body').querySelector('.card-title').textContent;
+
+            if (!confirm(`Queue job "${jobName}" to run in the background now?`)) {
                 return;
             }
-            
-            databaseList.innerHTML = '<div class="text-center my-3"><div class="spinner-border" role="status"></div></div>';
-            
-            fetch(`/get_databases/${serverId}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        databaseList.innerHTML = '';
-                        
-                        data.databases.forEach(db => {
-                            const checkbox = document.createElement('div');
-                            checkbox.className = 'form-check';
-                            checkbox.innerHTML = `
-                                <input class="form-check-input" type="checkbox" name="databases" value="${db}" id="db-${db}">
-                                <label class="form-check-label" for="db-${db}">${db}</label>
-                            `;
-                            databaseList.appendChild(checkbox);
-                        });
-                        
-                        // Add select all option
-                        const selectAll = document.createElement('div');
-                        selectAll.className = 'form-check mt-2';
-                        selectAll.innerHTML = `
-                            <input class="form-check-input" type="checkbox" id="select-all">
-                            <label class="form-check-label fw-bold" for="select-all">Select All</label>
-                        `;
-                        databaseList.appendChild(selectAll);
-                        
-                        document.getElementById('select-all').addEventListener('click', function() {
-                            const checkboxes = databaseList.querySelectorAll('input[type="checkbox"]:not(#select-all)');
-                            checkboxes.forEach(checkbox => {
-                                checkbox.checked = this.checked;
-                            });
-                        });
-                    } else {
-                        databaseList.innerHTML = `<div class="alert alert-danger">${data.message}</div>`;
-                    }
-                });
-        });
-    }
-    
-    // Show/hide schedule options based on selection
-    const scheduleType = document.getElementById('schedule_type');
-    if (scheduleType) {
-        scheduleType.addEventListener('change', function() {
-            document.querySelectorAll('.schedule-option').forEach(el => {
-                el.style.display = 'none';
+
+            this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Queuing...';
+            this.disabled = true;
+
+            fetch(`/run_job/${jobId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then((response) => response.json())
+            .then((data) => {
+                alert(data.message);
+                this.innerHTML = 'Run Now';
+                this.disabled = false;
+            })
+            .catch((error) => {
+                alert('Error: ' + error);
+                this.innerHTML = 'Run Now';
+                this.disabled = false;
             });
-            
-            const selectedOption = document.getElementById(`${this.value}-options`);
-            if (selectedOption) {
-                selectedOption.style.display = 'block';
-            }
         });
-        
-        // Trigger change event on page load
-        scheduleType.dispatchEvent(new Event('change'));
-    }
-    
-    // Run job immediately
-    document.querySelectorAll('.run-job').forEach(button => {
+    });
+
+    document.querySelectorAll('.delete-job').forEach((button) => {
         button.addEventListener('click', function() {
             const jobId = this.dataset.jobId;
             const jobName = this.closest('.card-body').querySelector('.card-title').textContent;
-            
-            if (confirm(`Are you sure you want to run job "${jobName}" immediately?`)) {
-                this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Running...';
-                this.disabled = true;
-                
-                fetch(`/run_job/${jobId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                    } else {
-                        alert('Error: ' + data.message);
-                    }
-                    
-                    this.innerHTML = 'Run Now';
-                    this.disabled = false;
-                })
-                .catch(error => {
-                    alert('Error: ' + error);
-                    this.innerHTML = 'Run Now';
-                    this.disabled = false;
-                });
+
+            if (!confirm(`Are you sure you want to delete job "${jobName}"?`)) {
+                return;
             }
+
+            fetch(`/delete_job/${jobId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then((response) => response.json())
+            .then((data) => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                    return;
+                }
+
+                alert('Error: ' + data.message);
+            })
+            .catch((error) => {
+                alert('Error: ' + error);
+            });
         });
     });
-    
-    // Delete job functionality
-    document.querySelectorAll('.delete-job').forEach(button => {
-        button.addEventListener('click', function() {
-            const jobId = this.dataset.jobId;
-            const jobName = this.closest('.card-body').querySelector('.card-title').textContent;
-            
-            if (confirm(`Are you sure you want to delete job "${jobName}"?`)) {
-                fetch(`/delete_job/${jobId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        location.reload();
-                    } else {
-                        alert('Error: ' + data.message);
-                    }
-                })
-                .catch(error => {
-                    alert('Error: ' + error);
-                });
-            }
-        });
-    });
-    
-    // Toggle job status
-    document.querySelectorAll('.toggle-job').forEach(button => {
+
+    document.querySelectorAll('.toggle-job').forEach((button) => {
         button.addEventListener('click', function() {
             const jobId = this.dataset.jobId;
             const jobName = this.closest('.card-body').querySelector('.card-title').textContent;
             const action = this.textContent.toLowerCase();
-            
-            if (confirm(`Are you sure you want to ${action} job "${jobName}"?`)) {
-                fetch(`/toggle_job/${jobId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        location.reload();
-                    } else {
-                        alert('Error: ' + data.message);
-                    }
-                })
-                .catch(error => {
-                    alert('Error: ' + error);
-                });
+
+            if (!confirm(`Are you sure you want to ${action} job "${jobName}"?`)) {
+                return;
             }
+
+            fetch(`/toggle_job/${jobId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            })
+            .then((response) => response.json())
+            .then((data) => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                    return;
+                }
+
+                alert('Error: ' + data.message);
+            })
+            .catch((error) => {
+                alert('Error: ' + error);
+            });
         });
     });
+
+    const testEmailButton = document.getElementById('send-test-email');
+    const notificationEmailInput = document.getElementById('notification_email');
+
+    if (testEmailButton && notificationEmailInput) {
+        testEmailButton.addEventListener('click', function() {
+            const email = notificationEmailInput.value.trim();
+
+            if (!email) {
+                alert('Enter a notification email first.');
+                return;
+            }
+
+            this.disabled = true;
+            this.textContent = 'Sending...';
+
+            fetch('/test_email', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ email }),
+            })
+            .then((response) => response.json())
+            .then((data) => {
+                alert(data.message);
+            })
+            .catch((error) => {
+                alert('Error: ' + error);
+            })
+            .finally(() => {
+                this.disabled = false;
+                this.textContent = 'Send Test Email';
+            });
+        });
+    }
 });
 </script>
 {% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-2">Backup Log</h2>
+        <p class="text-muted mb-0">{{ record.backup_job.name }} • {{ record.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+    </div>
+    <a href="{{ url_for('reports') }}" class="btn btn-outline-secondary">Back to Reports</a>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-3">
+                <p class="dashboard-stat-label">Status</p>
+                <span class="status-badge status-{{ record.status }}">{{ record.status }}</span>
+            </div>
+            <div class="col-md-3">
+                <p class="dashboard-stat-label">Started</p>
+                <p class="mb-0">{{ record.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+            </div>
+            <div class="col-md-3">
+                <p class="dashboard-stat-label">Finished</p>
+                <p class="mb-0">{{ record.end_time.strftime('%Y-%m-%d %H:%M:%S') if record.end_time else 'N/A' }}</p>
+            </div>
+            <div class="col-md-3">
+                <p class="dashboard-stat-label">Backup Size</p>
+                <p class="mb-0">{{ record.file_size|filesize }}</p>
+            </div>
+        </div>
+        {% if record.log_path %}
+        <p class="text-muted mt-3 mb-0">Log file: {{ record.log_path }}</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">Detailed Output</h5>
+    </div>
+    <div class="card-body">
+        <pre class="backup-log-view">{{ log_content }}</pre>
+    </div>
+</div>
+{% endblock %}

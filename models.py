@@ -68,6 +68,7 @@ class BackupJob(db.Model):
     folder_path = db.Column(db.String(500), nullable=False)
     schedule_type = db.Column(db.String(20), nullable=False)  # daily, weekly, monthly
     cron_expression = db.Column(db.String(100))
+    schedule_config = db.Column(db.Text)
     retention_policy = db.Column(db.Integer, nullable=False)
     notification_email = db.Column(db.String(200))
     is_active = db.Column(db.Boolean, default=True)
@@ -85,6 +86,7 @@ class BackupHistory(db.Model):
     status = db.Column(db.String(20), nullable=False)  # success, failed, running
     message = db.Column(db.Text)
     file_path = db.Column(db.String(500))
+    log_path = db.Column(db.String(500))
     file_size = db.Column(db.BigInteger)
     
     backup_job = db.relationship('BackupJob', backref=db.backref('history', lazy=True))

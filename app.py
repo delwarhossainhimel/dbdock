@@ -1,15 +1,23 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session, abort
 from models import db, DatabaseServer, StorageLocation, BackupJob, BackupHistory, DatabaseType, StorageType
-# In your main application
-from backup_scripts import postgres_backup, mysql_backup
 from werkzeug.security import check_password_hash, generate_password_hash
 from dotenv import load_dotenv
-from scheduler import init_scheduler, schedule_backup_job, unschedule_backup_job
+from scheduler import init_scheduler, schedule_backup_job, unschedule_backup_job, enqueue_immediate_backup_job, send_test_email
+from sqlalchemy import text
+from job_schedules import (
+    build_schedule_config_from_form,
+    get_cron_expression,
+    get_primary_schedule_type,
+    get_schedule_entries,
+    normalize_schedule_config,
+    validate_schedule_config,
+)
 import json
 import os
 import fcntl
 import sys
 from datetime import datetime
+from pathlib import Path
 load_dotenv()
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///dbDock.db'
@@ -47,9 +55,87 @@ def from_json_filter(value):
     except:
         return {}
 
+@app.template_filter('schedule_entries')
+def schedule_entries_filter(value):
+    return get_schedule_entries(value)
+
+@app.template_filter('filesize')
+def filesize_filter(size):
+    if size is None:
+        return "N/A"
+
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+
+@app.context_processor
+def inject_schedule_helpers():
+    return {
+        'get_schedule_entries': get_schedule_entries,
+        'normalize_schedule_config': normalize_schedule_config,
+    }
+
+def ensure_database_schema():
+    inspector = db.session.execute(text("PRAGMA table_info(backup_job)")).fetchall()
+    column_names = {column[1] for column in inspector}
+
+    if 'schedule_config' not in column_names:
+        db.session.execute(text("ALTER TABLE backup_job ADD COLUMN schedule_config TEXT"))
+
+    history_inspector = db.session.execute(text("PRAGMA table_info(backup_history)")).fetchall()
+    history_column_names = {column[1] for column in history_inspector}
+
+    if 'log_path' not in history_column_names:
+        db.session.execute(text("ALTER TABLE backup_history ADD COLUMN log_path TEXT"))
+
+    db.session.commit()
+
+def migrate_backup_job_schedules():
+    jobs = BackupJob.query.all()
+    updated = False
+
+    for job in jobs:
+        normalized = normalize_schedule_config(
+            job.schedule_config,
+            job.schedule_type,
+            job.cron_expression,
+            fallback_retention=job.retention_policy,
+        )
+        primary_schedule_type = get_primary_schedule_type(normalized)
+        primary_entry = next((entry for entry in get_schedule_entries(normalized) if entry['type'] == primary_schedule_type), None)
+
+        normalized_json = json.dumps(normalized)
+        if job.schedule_config != normalized_json:
+            job.schedule_config = normalized_json
+            updated = True
+
+        if primary_schedule_type and job.schedule_type != primary_schedule_type:
+            job.schedule_type = primary_schedule_type
+            updated = True
+
+        if primary_entry and job.cron_expression != primary_entry['cron_expression']:
+            job.cron_expression = primary_entry['cron_expression']
+            updated = True
+
+        if primary_schedule_type:
+            primary_retention = int(normalized[primary_schedule_type].get('retention', job.retention_policy or 1))
+            if job.retention_policy != primary_retention:
+                job.retention_policy = primary_retention
+                updated = True
+
+    if updated:
+        db.session.commit()
+
 # Initialize the application
 with app.app_context():
     db.create_all()
+    ensure_database_schema()
+    migrate_backup_job_schedules()
     
     print("🔄 Initializing scheduler...")
     
@@ -330,12 +416,16 @@ def backup_jobs():
         databases = request.form.getlist('databases')
         storage_location_id = request.form.get('storage_location')
         folder_path = request.form.get('folder_path')
-        schedule_type = request.form.get('schedule_type')
-        retention_policy = request.form.get('retention_policy')
+        schedule_config = build_schedule_config_from_form(request.form)
         notification_email = request.form.get('notification_email')
-        
-        # Generate cron expression based on schedule type
-        cron_expression = generate_cron_expression(schedule_type, request.form)
+
+        is_valid, validation_message = validate_schedule_config(schedule_config)
+        if not is_valid:
+            flash(validation_message, "danger")
+            return redirect(url_for('backup_jobs'))
+
+        primary_schedule_type = get_primary_schedule_type(schedule_config)
+        cron_expression = get_cron_expression(primary_schedule_type, schedule_config[primary_schedule_type])
         
         job = BackupJob(
             name=name,
@@ -344,9 +434,10 @@ def backup_jobs():
             databases=json.dumps(databases),
             storage_location_id=storage_location_id,
             folder_path=folder_path,
-            schedule_type=schedule_type,
+            schedule_type=primary_schedule_type,
             cron_expression=cron_expression,
-            retention_policy=retention_policy,
+            schedule_config=json.dumps(schedule_config),
+            retention_policy=int(schedule_config[primary_schedule_type]['retention']),
             notification_email=notification_email
         )
         
@@ -361,6 +452,13 @@ def backup_jobs():
     servers = DatabaseServer.query.filter_by(is_active=True).all()
     locations = StorageLocation.query.filter_by(is_active=True).all()
     jobs = BackupJob.query.all()
+    for job in jobs:
+        job.normalized_schedule_config = normalize_schedule_config(
+            job.schedule_config,
+            job.schedule_type,
+            job.cron_expression,
+            fallback_retention=job.retention_policy,
+        )
     return render_template('backup_jobs.html', 
                           servers=servers, 
                           locations=locations, 
@@ -387,6 +485,13 @@ def edit_job(job_id):
     # Parse the databases from JSON
     databases = json.loads(job.databases) if job.databases else []
     
+    job.normalized_schedule_config = normalize_schedule_config(
+        job.schedule_config,
+        job.schedule_type,
+        job.cron_expression,
+        fallback_retention=job.retention_policy,
+    )
+
     return render_template('edit_job.html', 
                          job=job, 
                          servers=servers, 
@@ -403,12 +508,18 @@ def update_job(job_id):
     job.databases = json.dumps(request.form.getlist('databases'))
     job.storage_location_id = request.form.get('storage_location')
     job.folder_path = request.form.get('folder_path')
-    job.schedule_type = request.form.get('schedule_type')
-    job.retention_policy = request.form.get('retention_policy')
     job.notification_email = request.form.get('notification_email')
-    
-    # Generate new cron expression
-    job.cron_expression = generate_cron_expression(job.schedule_type, request.form)
+
+    schedule_config = build_schedule_config_from_form(request.form)
+    is_valid, validation_message = validate_schedule_config(schedule_config)
+    if not is_valid:
+        flash(validation_message, "danger")
+        return redirect(url_for('edit_job', job_id=job.id))
+
+    job.schedule_type = get_primary_schedule_type(schedule_config)
+    job.cron_expression = get_cron_expression(job.schedule_type, schedule_config[job.schedule_type])
+    job.schedule_config = json.dumps(schedule_config)
+    job.retention_policy = int(schedule_config[job.schedule_type]['retention'])
     
     db.session.commit()
     
@@ -419,12 +530,26 @@ def update_job(job_id):
 
 @app.route('/run_job/<int:job_id>', methods=['POST'])
 def run_job(job_id):
-    from scheduler import run_backup_job
-    
-    # Run the job immediately
-    run_backup_job(job_id)
-    
-    return jsonify({'success': True, 'message': 'Backup job started successfully'})
+    job = BackupJob.query.get_or_404(job_id)
+
+    if not enqueue_immediate_backup_job(scheduler, job.id):
+        return jsonify({'success': False, 'message': 'Scheduler is not running, so the job could not be queued.'}), 503
+
+    return jsonify({'success': True, 'message': 'Backup job queued successfully and is running in the background.'})
+
+@app.route('/test_email', methods=['POST'])
+def test_email():
+    payload = request.get_json(silent=True) or {}
+    recipient_email = (payload.get('email') or '').strip()
+
+    if not recipient_email:
+        return jsonify({'success': False, 'message': 'Enter a recipient email first.'}), 400
+
+    try:
+        send_test_email(recipient_email)
+        return jsonify({'success': True, 'message': f'Test email sent to {recipient_email}.'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
 
 @app.route('/toggle_job/<int:job_id>', methods=['POST'])
 def toggle_job(job_id):
@@ -485,6 +610,7 @@ def reports():
     job_id = request.args.get('job_id')
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
+    page = request.args.get('page', 1, type=int)
     
     query = BackupHistory.query
     
@@ -497,10 +623,34 @@ def reports():
     if end_date:
         query = query.filter(BackupHistory.start_time <= datetime.strptime(end_date, '%Y-%m-%d'))
     
-    history = query.order_by(BackupHistory.start_time.desc()).all()
+    pagination = query.order_by(BackupHistory.start_time.desc()).paginate(page=page, per_page=20, error_out=False)
+    history = pagination.items
     jobs = BackupJob.query.all()
     
-    return render_template('reports.html', history=history, jobs=jobs)
+    return render_template('reports.html', history=history, jobs=jobs, pagination=pagination)
+
+@app.route('/reports/<int:history_id>/log')
+def view_backup_log(history_id):
+    record = BackupHistory.query.get_or_404(history_id)
+
+    if not record.log_path:
+        flash("No log file is available for this backup run.", "warning")
+        return redirect(url_for('reports'))
+
+    log_path = Path(record.log_path).resolve()
+    logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+
+    try:
+        log_path.relative_to(logs_root)
+    except ValueError:
+        abort(404)
+
+    if not log_path.exists() or not log_path.is_file():
+        flash("The log file could not be found on disk.", "warning")
+        return redirect(url_for('reports'))
+
+    log_content = log_path.read_text(encoding='utf-8', errors='replace')
+    return render_template('backup_log.html', record=record, log_content=log_content)
 
 # Scheduler Management Routes
 @app.route('/scheduler/status')
@@ -544,8 +694,14 @@ def debug_scheduler():
             {
                 'id': job.id,
                 'name': job.name,
-                'schedule_type': job.schedule_type,
-                'cron_expression': job.cron_expression,
+                'schedule_entries': get_schedule_entries(
+                    normalize_schedule_config(
+                        job.schedule_config,
+                        job.schedule_type,
+                        job.cron_expression,
+                        fallback_retention=job.retention_policy,
+                    )
+                ),
                 'is_active': job.is_active
             }
             for job in db_jobs
@@ -557,14 +713,12 @@ def debug_scheduler():
 @app.route('/test/scheduler/<int:job_id>')
 def test_scheduler(job_id):
     """Test if scheduler can trigger a specific job"""
-    from scheduler import run_backup_job
-    
     try:
         print(f"🧪 Testing scheduler for job ID: {job_id}")
-        run_backup_job(job_id)
+        queued = enqueue_immediate_backup_job(scheduler, job_id)
         return jsonify({
-            'success': True, 
-            'message': f'Test trigger sent for job {job_id}'
+            'success': queued,
+            'message': f'Test trigger queued for job {job_id}' if queued else 'Scheduler is not running'
         })
     except Exception as e:
         return jsonify({
@@ -578,9 +732,18 @@ def debug_cron(job_id):
     
     from apscheduler.triggers.cron import CronTrigger
     try:
-        # Parse the cron expression
-        parts = job.cron_expression.split()
-        if len(parts) == 5:
+        schedule_entries = get_schedule_entries(
+            normalize_schedule_config(
+                job.schedule_config,
+                job.schedule_type,
+                job.cron_expression,
+                fallback_retention=job.retention_policy,
+            )
+        )
+        trigger_data = []
+
+        for entry in schedule_entries:
+            parts = entry['cron_expression'].split()
             trigger = CronTrigger(
                 minute=parts[0],
                 hour=parts[1],
@@ -589,18 +752,18 @@ def debug_cron(job_id):
                 day_of_week=parts[4]
             )
             next_run = trigger.get_next_fire_time(None, datetime.now())
-            return jsonify({
-                'success': True,
-                'job_name': job.name,
-                'cron_expression': job.cron_expression,
+            trigger_data.append({
+                'schedule_type': entry['type'],
+                'cron_expression': entry['cron_expression'],
+                'summary': entry['summary'],
                 'next_scheduled_run': next_run.isoformat() if next_run else None,
-                'schedule_type': job.schedule_type
             })
-        else:
-            return jsonify({
-                'success': False,
-                'error': f'Invalid cron expression: {job.cron_expression}'
-            })
+
+        return jsonify({
+            'success': True,
+            'job_name': job.name,
+            'schedules': trigger_data,
+        })
     except Exception as e:
         return jsonify({
             'success': False,
@@ -625,7 +788,14 @@ def debug_scheduler_status():
             {
                 'id': job.id,
                 'name': job.name,
-                'cron_expression': job.cron_expression,
+                'schedule_entries': get_schedule_entries(
+                    normalize_schedule_config(
+                        job.schedule_config,
+                        job.schedule_type,
+                        job.cron_expression,
+                        fallback_retention=job.retention_policy,
+                    )
+                ),
                 'is_active': job.is_active
             }
             for job in db_jobs
@@ -677,9 +847,18 @@ def debug_next_runs():
     
     for job in db_jobs:
         try:
-            # Parse cron expression to calculate next run
-            parts = job.cron_expression.split()
-            if len(parts) == 5:
+            schedule_entries = get_schedule_entries(
+                normalize_schedule_config(
+                    job.schedule_config,
+                    job.schedule_type,
+                    job.cron_expression,
+                    fallback_retention=job.retention_policy,
+                )
+            )
+            next_runs = []
+
+            for entry in schedule_entries:
+                parts = entry['cron_expression'].split()
                 trigger = CronTrigger(
                     minute=parts[0],
                     hour=parts[1],
@@ -688,16 +867,20 @@ def debug_next_runs():
                     day_of_week=parts[4]
                 )
                 next_run = trigger.get_next_fire_time(None, datetime.now())
-                
-                jobs_info.append({
-                    'id': job.id,
-                    'name': job.name,
-                    'cron_expression': job.cron_expression,
+                next_runs.append({
+                    'schedule_type': entry['type'],
+                    'cron_expression': entry['cron_expression'],
+                    'summary': entry['summary'],
                     'next_run_calculated': next_run.isoformat() if next_run else None,
                     'next_run_utc': next_run.strftime('%Y-%m-%d %H:%M:%S UTC') if next_run else None,
                     'next_run_local': next_run.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z') if next_run else None,
-                    'time_until_next': str(next_run - datetime.now().astimezone()) if next_run else None
                 })
+
+            jobs_info.append({
+                'id': job.id,
+                'name': job.name,
+                'schedules': next_runs,
+            })
         except Exception as e:
             jobs_info.append({
                 'id': job.id,
@@ -726,27 +909,6 @@ def scheduler_ping():
     }
     
     return jsonify(scheduler_info)
-
-# Utility Functions
-def generate_cron_expression(schedule_type, form_data):
-    if schedule_type == 'daily':
-        time_str = form_data.get('daily_time', '00:00')
-        hour = time_str.split(':')[0]
-        minute = time_str.split(':')[1]
-        return f"{minute} {hour} * * *"
-    elif schedule_type == 'weekly':
-        time_str = form_data.get('weekly_time', '00:00')
-        hour = time_str.split(':')[0]
-        minute = time_str.split(':')[1]
-        day_of_week = form_data.get('weekly_day', '0')
-        return f"{minute} {hour} * * {day_of_week}"
-    elif schedule_type == 'monthly':
-        time_str = form_data.get('monthly_time', '00:00')
-        hour = time_str.split(':')[0]
-        minute = time_str.split(':')[1]
-        day_of_month = form_data.get('monthly_day', '1')
-        return f"{minute} {hour} {day_of_month} * *"
-    return None
 
 # Error Handlers
 @app.errorhandler(404)

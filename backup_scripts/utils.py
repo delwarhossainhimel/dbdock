@@ -3,6 +3,28 @@ import shutil
 import uuid
 from datetime import datetime
 
+
+def normalize_relative_folder_path(folder_path):
+    """
+    Normalize user-provided folder paths into a safe relative path.
+    Leading slashes are removed so values like "/data1" stay inside the
+    configured storage root instead of becoming absolute filesystem paths.
+    """
+    if not folder_path:
+        return ""
+
+    normalized_path = str(folder_path).strip().replace("\\", "/")
+    path_parts = []
+
+    for part in normalized_path.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            continue
+        path_parts.append(part)
+
+    return "/".join(path_parts)
+
 def create_job_tmp_directory(job_id=None):
     """
     Create a job-specific temporary directory
@@ -69,14 +91,14 @@ def create_full_folder_path(base_folder_path, schedule_type):
     """
     # Capitalize the first letter of schedule type
     schedule_folder = schedule_type.capitalize()
-    
+
+    normalized_base_path = normalize_relative_folder_path(base_folder_path)
+
     # Combine base path with schedule folder
-    if base_folder_path:
-        full_path = f"{base_folder_path}/{schedule_folder}"
-    else:
-        full_path = schedule_folder
-    
-    return full_path
+    if normalized_base_path:
+        return f"{normalized_base_path}/{schedule_folder}"
+
+    return schedule_folder
 
 def cleanup_global_old_tmp_files(max_age_hours=24):
     """

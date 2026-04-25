@@ -1,29 +1,47 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="d-flex justify-content-center align-items-center vh-100">
-    <div class="card p-4 shadow-lg" style="width: 400px;">
-        <h4 class="text-center mb-4">🔐 Login</h4>
-
+<section class="login-shell">
+    <div class="login-panel">
+        <div class="login-copy">
+            <p class="login-eyebrow">Database Backup Manager</p>
+            <h1 class="login-title">Welcome back to dbDock</h1>
+            <!-- <p class="login-subtitle">
+                Sign in to manage backup schedules, storage locations, and reports from one clean dashboard.
+            </p> -->
+            <!-- <div class="login-copy-card">
+                <span class="login-copy-label">Secure access</span>
+                <p class="login-copy-text">Only authenticated users can view jobs, run backups, and configure notifications.</p>
+            </div> -->
+        </div>
+        <div class="card login-card">
+            <div class="login-card-body">
+                <div class="login-card-header">
+                    <p class="login-form-kicker">Sign in</p>
+                    <!-- <h2 class="login-form-title">Access your workspace</h2>
+                    <p class="login-form-text">Use your administrator credentials to continue.</p> -->
+                </div>
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
             {% for category, message in messages %}
-              <div class="alert alert-{{ category }}">{{ message }}</div>
+              <div class="alert alert-{{ category }} login-alert">{{ message }}</div>
             {% endfor %}
           {% endif %}
         {% endwith %}
 
-        <form method="POST" action="{{ url_for('login') }}">
-            <div class="form-group mb-3">
-                <label for="username">Username</label>
-                <input type="text" name="username" class="form-control" required autofocus>
+                <form method="POST" action="{{ url_for('login') }}" class="login-form">
+                    <div class="form-group mb-3">
+                        <label for="username" class="login-label">Username</label>
+                        <input type="text" id="username" name="username" class="form-control" required autofocus placeholder="Enter your username">
+                    </div>
+                    <div class="form-group mb-3">
+                        <label for="password" class="login-label">Password</label>
+                        <input type="password" id="password" name="password" class="form-control" required placeholder="Enter your password">
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100 login-submit">Login</button>
+                </form>
             </div>
-            <div class="form-group mb-3">
-                <label for="password">Password</label>
-                <input type="password" name="password" class="form-control" required>
-            </div>
-            <button type="submit" class="btn btn-primary w-100">Login</button>
-        </form>
+        </div>
     </div>
-</div>
+</section>
 {% endblock %}
