@@ -11,29 +11,87 @@
 <div class="row">
     {% for job in jobs %}
     <div class="col-12 mb-3">
-        <div class="card">
+        <div class="card backup-job-card">
             <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start gap-3">
-                    <div>
+                <div class="backup-job-layout">
+                    <div class="backup-job-content">
                         <h5 class="card-title">{{ job.name }}</h5>
-                        <p class="card-text mb-2">
-                            <strong>Database Server:</strong> {{ job.database_server.name }}<br>
-                            <strong>Storage Location:</strong> {{ job.storage_location.name }}<br>
-                            <strong>Status:</strong>
-                            <span class="badge bg-{{ 'success' if job.is_active else 'secondary' }}">
-                                {{ 'Active' if job.is_active else 'Inactive' }}
-                            </span>
-                        </p>
-                        <div>
-                            <strong>Schedules:</strong>
-                            <ul class="mb-0 mt-1">
+                        <div class="backup-job-meta">
+                            <div class="backup-job-meta-item">
+                                <span class="backup-job-label">Database Server</span>
+                                <span class="backup-job-value">{{ job.database_server.name }}</span>
+                            </div>
+                            <div class="backup-job-meta-item">
+                                <span class="backup-job-label">Storage Location</span>
+                                <span class="backup-job-value">{{ job.storage_location.name }}</span>
+                            </div>
+                            <div class="backup-job-meta-item">
+                                <span class="backup-job-label">Job Status</span>
+                                <span class="status-badge status-{{ 'success' if job.is_active else 'inactive' }}">
+                                    {{ 'Active' if job.is_active else 'Inactive' }}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="backup-job-schedules">
+                            <div class="backup-job-section-title">Schedules</div>
+                            <ul class="backup-job-schedule-list mb-0 mt-2">
                                 {% for entry in get_schedule_entries(job.normalized_schedule_config) %}
                                 <li>{{ entry.summary }}{% if entry.cron_expression %} ({{ entry.cron_expression }}){% endif %}</li>
                                 {% endfor %}
                             </ul>
                         </div>
+                        <div class="backup-job-history mt-3">
+                            <div class="backup-job-section-title">Last Backup</div>
+                            {% if job.latest_history %}
+                            <div class="backup-job-history-card status-theme-{{ job.latest_history.status }}">
+                                <div class="backup-job-history-top">
+                                    <div class="backup-job-history-status">
+                                        <span class="status-badge status-{{ job.latest_history.status }}">
+                                            {{ job.latest_history.status }}
+                                        </span>
+                                        <p class="backup-job-history-summary mb-0">
+                                            {% if job.latest_history.status == 'success' %}
+                                            The last backup finished successfully.
+                                            {% elif job.latest_history.status == 'failed' %}
+                                            The last backup failed and needs attention.
+                                            {% else %}
+                                            A backup is currently running.
+                                            {% endif %}
+                                        </p>
+                                    </div>
+                                    <div class="backup-job-history-actions">
+                                        <a href="{{ url_for('reports', job_id=job.id) }}" class="btn btn-outline-secondary btn-sm">
+                                            View History
+                                        </a>
+                                        {% if job.latest_history.log_path %}
+                                        <a href="{{ url_for('view_backup_log', history_id=job.latest_history.id) }}" class="btn btn-outline-primary btn-sm">
+                                            View Log
+                                        </a>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="backup-job-history-details">
+                                    <div class="backup-job-history-detail">
+                                        <span class="backup-job-label">Started</span>
+                                        <span class="backup-job-value">{{ job.latest_history.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</span>
+                                    </div>
+                                    <div class="backup-job-history-detail">
+                                        <span class="backup-job-label">Finished</span>
+                                        <span class="backup-job-value">{{ job.latest_history.end_time.strftime('%Y-%m-%d %H:%M:%S') if job.latest_history.end_time else 'Still running' }}</span>
+                                    </div>
+                                </div>
+                                {% if job.latest_history.message %}
+                                <p class="backup-job-history-message mb-0">{{ job.latest_history.message }}</p>
+                                {% endif %}
+                            </div>
+                            {% else %}
+                            <div class="backup-job-history-card status-theme-empty">
+                                <p class="backup-job-history-summary mb-0">This job has not run yet. Use <strong>Run Now</strong> to create the first backup.</p>
+                            </div>
+                            {% endif %}
+                        </div>
                     </div>
-                    <div class="btn-group-vertical" role="group">
+                    <div class="btn-group-vertical backup-job-actions" role="group">
                         <button class="btn btn-sm btn-outline-primary run-job" data-job-id="{{ job.id }}">
                             Run Now
                         </button>

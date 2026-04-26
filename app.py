@@ -451,7 +451,14 @@ def backup_jobs():
     
     servers = DatabaseServer.query.filter_by(is_active=True).all()
     locations = StorageLocation.query.filter_by(is_active=True).all()
-    jobs = BackupJob.query.all()
+    jobs = BackupJob.query.order_by(BackupJob.name.asc()).all()
+    latest_history_by_job = {}
+    for record in BackupHistory.query.order_by(
+        BackupHistory.backup_job_id.asc(),
+        BackupHistory.start_time.desc(),
+        BackupHistory.id.desc(),
+    ).all():
+        latest_history_by_job.setdefault(record.backup_job_id, record)
     for job in jobs:
         job.normalized_schedule_config = normalize_schedule_config(
             job.schedule_config,
@@ -459,6 +466,7 @@ def backup_jobs():
             job.cron_expression,
             fallback_retention=job.retention_policy,
         )
+        job.latest_history = latest_history_by_job.get(job.id)
     return render_template('backup_jobs.html', 
                           servers=servers, 
                           locations=locations, 

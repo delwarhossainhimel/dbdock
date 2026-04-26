@@ -126,7 +126,7 @@
                             <input type="email" class="form-control" name="notification_email" id="notification_email" value="{{ job.notification_email }}">
                             <button type="button" class="btn btn-outline-primary" id="send-test-email">Send Test Email</button>
                         </div>
-                        <div class="form-text">Uses the SMTP settings from `.env` and sends to this receiver email.</div>
+                        <!-- <div class="form-text">Uses the SMTP settings from `.env` and sends to this receiver email.</div> -->
                     </div>
                     <div class="d-flex justify-content-between">
                         <a href="{{ url_for('backup_jobs') }}" class="btn btn-secondary">Cancel</a>

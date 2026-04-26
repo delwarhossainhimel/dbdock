@@ -162,6 +162,155 @@ button {
     color: var(--warning-text);
 }
 
+.status-inactive {
+    background-color: #e9eef5;
+    color: #5b697d;
+}
+
+.backup-job-card .card-body {
+    padding: 1.05rem 1.1rem;
+}
+
+.backup-job-layout {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1.1rem;
+}
+
+.backup-job-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.backup-job-actions {
+    flex-shrink: 0;
+    min-width: 118px;
+    gap: 0.5rem;
+}
+
+.backup-job-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.85rem;
+    margin-top: 0.65rem;
+    margin-bottom: 0.75rem;
+}
+
+.backup-job-meta-item {
+    min-width: 180px;
+    padding: 0.65rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.backup-job-label {
+    display: block;
+    margin-bottom: 0.2rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-soft);
+}
+
+.backup-job-value {
+    display: block;
+    font-size: 0.96rem;
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-word;
+}
+
+.backup-job-section-title {
+    font-size: 0.96rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.backup-job-schedule-list {
+    padding-left: 1.2rem;
+    color: var(--text);
+}
+
+.backup-job-schedule-list li + li {
+    margin-top: 0.2rem;
+}
+
+.backup-job-history-card {
+    margin-top: 0.55rem;
+    padding: 0.8rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.backup-job-history-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.75rem;
+}
+
+.backup-job-history-status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.backup-job-history-summary {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.backup-job-history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.backup-job-history-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+    gap: 0.65rem;
+    margin-top: 0.65rem;
+}
+
+.backup-job-history-detail {
+    padding: 0.62rem 0.75rem;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid rgba(201, 213, 229, 0.85);
+}
+
+.backup-job-history-message {
+    margin-top: 0.65rem;
+    color: var(--text-soft);
+    line-height: 1.45;
+}
+
+.status-theme-success {
+    background: linear-gradient(180deg, #f7fef9 0%, #eefaf3 100%);
+    border-color: rgba(32, 134, 74, 0.18);
+}
+
+.status-theme-failed {
+    background: linear-gradient(180deg, #fff9fa 0%, #fff0f2 100%);
+    border-color: rgba(194, 64, 80, 0.18);
+}
+
+.status-theme-running {
+    background: linear-gradient(180deg, #fffdf6 0%, #fff7df 100%);
+    border-color: rgba(181, 138, 9, 0.22);
+}
+
+.status-theme-empty {
+    background: linear-gradient(180deg, #ffffff 0%, #f5f8fc 100%);
+    border-style: dashed;
+}
+
 .app-navbar {
     background: linear-gradient(180deg, #202834 0%, var(--nav-bg) 100%);
     border-bottom: 1px solid var(--nav-line);
@@ -259,6 +408,39 @@ button {
 
 .app-footer {
     padding: 0 0 1.5rem;
+}
+
+@media (max-width: 991.98px) {
+    .backup-job-layout {
+        flex-direction: column;
+    }
+
+    .backup-job-actions {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .backup-job-actions .btn {
+        width: 100%;
+    }
+
+    .backup-job-history-top {
+        flex-direction: column;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .backup-job-meta {
+        flex-direction: column;
+    }
+
+    .backup-job-meta-item {
+        min-width: 0;
+    }
+
+    .backup-job-history-details {
+        grid-template-columns: 1fr;
+    }
 }
 
 .app-footer-auth {
