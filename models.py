@@ -84,6 +84,7 @@ class BackupHistory(db.Model):
     start_time = db.Column(db.DateTime, nullable=False)
     end_time = db.Column(db.DateTime)
     status = db.Column(db.String(20), nullable=False)  # success, failed, running
+    trigger_source = db.Column(db.String(20), default='manual')  # daily, weekly, monthly, yearly, manual
     message = db.Column(db.Text)
     file_path = db.Column(db.String(500))
     log_path = db.Column(db.String(500))

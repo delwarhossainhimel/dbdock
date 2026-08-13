@@ -1,16 +1,9 @@
 {% extends "base.html" %}
 
 {% block content %}
-<!-- <section class="dashboard-hero">
-    <div class="dashboard-hero-copy">
-        <p class="dashboard-kicker">Control Center</p>
-        <h1 class="dashboard-title">Keep every backup job visible, scheduled, and under control.</h1>
-        <p class="dashboard-subtitle">Monitor your database servers, storage targets, and recent backup activity from one place.</p>
-    </div>
-</section> -->
-
 <div class="row dashboard-stats">
-    <div class="col-md-4">
+    <!-- Database Servers -->
+    <div class="col-md-3">
         <div class="card dashboard-stat-card">
             <div class="card-body">
                 <p class="dashboard-stat-label">Database Servers</p>
@@ -19,7 +12,9 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    
+    <!-- Storage Locations -->
+    <div class="col-md-3">
         <div class="card dashboard-stat-card">
             <div class="card-body">
                 <p class="dashboard-stat-label">Storage Locations</p>
@@ -28,12 +23,76 @@
             </div>
         </div>
     </div>
-    <div class="col-md-4">
+    
+    <!-- Total Jobs -->
+    <div class="col-md-3">
         <div class="card dashboard-stat-card">
             <div class="card-body">
-                <p class="dashboard-stat-label">Active Backup Jobs</p>
-                <h5 class="card-title dashboard-stat-value">{{ jobs }}</h5>
+                <p class="dashboard-stat-label">Total Backup Jobs</p>
+                <h5 class="card-title dashboard-stat-value">{{ total_jobs }}</h5>
                 <a href="{{ url_for('backup_jobs') }}" class="btn btn-primary">Manage Jobs</a>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Active Jobs -->
+    <div class="col-md-3">
+        <div class="card dashboard-stat-card">
+            <div class="card-body">
+                <p class="dashboard-stat-label">Active Jobs</p>
+                <h5 class="card-title dashboard-stat-value">{{ active_jobs }}</h5>
+                <a href="{{ url_for('backup_jobs') }}" class="btn btn-primary">View Active</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Job Status Statistics -->
+<div class="row mt-3">
+    <div class="col-md-3">
+        <div class="card dashboard-stat-card status-card-success">
+            <div class="card-body">
+                <p class="dashboard-stat-label text-success">
+                    <i class="bi bi-check-circle-fill"></i> Successful Runs
+                </p>
+                <h5 class="card-title dashboard-stat-value text-success">{{ successful_runs }}</h5>
+                <span class="text-muted small">Last 30 days</span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card dashboard-stat-card status-card-danger">
+            <div class="card-body">
+                <p class="dashboard-stat-label text-danger">
+                    <i class="bi bi-x-circle-fill"></i> Failed Runs
+                </p>
+                <h5 class="card-title dashboard-stat-value text-danger">{{ failed_runs }}</h5>
+                <span class="text-muted small">Last 30 days</span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card dashboard-stat-card status-card-warning">
+            <div class="card-body">
+                <p class="dashboard-stat-label text-warning">
+                    <i class="bi bi-clock-history"></i> Running Now
+                </p>
+                <h5 class="card-title dashboard-stat-value text-warning">{{ running_jobs }}</h5>
+                <span class="text-muted small">Currently executing</span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card dashboard-stat-card status-card-info">
+            <div class="card-body">
+                <p class="dashboard-stat-label text-info">
+                    <i class="bi bi-graph-up-arrow"></i> Success Rate
+                </p>
+                <h5 class="card-title dashboard-stat-value text-info">{{ success_rate }}%</h5>
+                <span class="text-muted small">Overall success rate</span>
             </div>
         </div>
     </div>
@@ -47,6 +106,7 @@
                     <p class="dashboard-section-kicker">Operations</p>
                     <h5>Recent Backup History</h5>
                 </div>
+                <a href="{{ url_for('reports') }}" class="btn btn-sm btn-outline-primary">View All Reports</a>
             </div>
             <div class="card-body">
                 {% if history %}
@@ -73,7 +133,7 @@
                                         {{ record.status }}
                                     </span>
                                 </td>
-                                <td>{{ record.message|default('', true) }}</td>
+                                <td>{{ record.message|default('', true)|truncate(50) }}</td>
                                 <td>
                                     {% if record.log_path %}
                                     <a href="{{ url_for('view_backup_log', history_id=record.id) }}" class="btn btn-outline-primary btn-sm">View Log</a>

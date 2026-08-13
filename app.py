@@ -12,6 +12,8 @@ from job_schedules import (
     normalize_schedule_config,
     validate_schedule_config,
 )
+from flask import send_file
+from datetime import datetime
 import json
 import os
 import fcntl
@@ -89,6 +91,35 @@ def filesize_filter(size):
                 return f"{int(value)} {unit}"
             return f"{value:.1f} {unit}"
         value /= 1024
+
+@app.context_processor
+def inject_log_helpers():
+    def get_job_logs(job_id):
+        logs_dir = Path(app.root_path) / 'backup_logs'
+        if not logs_dir.exists():
+            return []
+        
+        log_files = []
+        for log_file in logs_dir.glob(f"backup_job_{job_id}_*.log"):
+            try:
+                schedule_type = log_file.name.replace(f"backup_job_{job_id}_", "").replace(".log", "")
+                if schedule_type in ['daily', 'weekly', 'monthly', 'yearly']:
+                    log_files.append({
+                        'name': log_file.name,
+                        'schedule_type': schedule_type,
+                        'path': str(log_file),
+                        'size': log_file.stat().st_size,
+                        'modified': datetime.fromtimestamp(log_file.stat().st_mtime)
+                    })
+            except:
+                pass
+        log_files.sort(key=lambda x: x['modified'], reverse=True)
+        return log_files
+    
+    return {
+        'get_job_logs': get_job_logs,
+        'view_schedule_log': view_schedule_log
+    }
 
 @app.context_processor
 def inject_schedule_helpers():
@@ -319,17 +350,57 @@ def logout():
 def dashboard():
     if 'user' not in session:
         return redirect(url_for('login'))
-    # your existing dashboard logic here
+    
+    # Get basic counts
     servers = DatabaseServer.query.filter_by(is_active=True).count()
     locations = StorageLocation.query.filter_by(is_active=True).count()
-    jobs = BackupJob.query.filter_by(is_active=True).count()
-    recent_history = BackupHistory.query.order_by(BackupHistory.start_time.desc()).limit(10).all()
+    total_jobs = BackupJob.query.count()
+    active_jobs = BackupJob.query.filter_by(is_active=True).count()
+    
+    # Get job execution statistics (last 30 days)
+    from datetime import datetime, timedelta
+    thirty_days_ago = datetime.now() - timedelta(days=30)
+    
+    successful_runs = BackupHistory.query.filter(
+        BackupHistory.status == 'success',
+        BackupHistory.start_time >= thirty_days_ago
+    ).count()
+    
+    failed_runs = BackupHistory.query.filter(
+        BackupHistory.status == 'failed',
+        BackupHistory.start_time >= thirty_days_ago
+    ).count()
+    
+    # Get currently running jobs
+    running_jobs = BackupHistory.query.filter(
+        BackupHistory.status == 'running',
+        BackupHistory.start_time >= datetime.now() - timedelta(hours=1)
+    ).count()
+    
+    # Calculate success rate
+    total_runs = successful_runs + failed_runs
+    if total_runs > 0:
+        success_rate = round((successful_runs / total_runs) * 100, 1)
+    else:
+        success_rate = 0
+    
+    # Get recent history
+    recent_history = BackupHistory.query.order_by(
+        BackupHistory.start_time.desc()
+    ).limit(10).all()
     
     return render_template('dashboard.html', 
                           servers=servers, 
                           locations=locations, 
-                          jobs=jobs,
+                          jobs=active_jobs,
+                          total_jobs=total_jobs,
+                          active_jobs=active_jobs,
+                          successful_runs=successful_runs,
+                          failed_runs=failed_runs,
+                          running_jobs=running_jobs,
+                          success_rate=success_rate,
                           history=recent_history)
+
 
 # ============================================
 # DATABASE SERVERS ROUTES
@@ -853,7 +924,7 @@ def test_email():
 def api_get_jobs():
     """API endpoint for getting jobs with pagination and filtering"""
     page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
+    per_page = request.args.get('per_page', 2, type=int)
     search = request.args.get('search', '', type=str)
     status = request.args.get('status', 'all', type=str)
     
@@ -1008,6 +1079,28 @@ def reports():
     
     return render_template('reports.html', history=history, jobs=jobs, pagination=pagination)
 
+# @app.route('/reports/<int:history_id>/log')
+# def view_backup_log(history_id):
+#     record = BackupHistory.query.get_or_404(history_id)
+
+#     if not record.log_path:
+#         flash("No log file is available for this backup run.", "warning")
+#         return redirect(url_for('reports'))
+
+#     log_path = Path(record.log_path).resolve()
+#     logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+
+#     try:
+#         log_path.relative_to(logs_root)
+#     except ValueError:
+#         abort(404)
+
+#     if not log_path.exists() or not log_path.is_file():
+#         flash("The log file could not be found on disk.", "warning")
+#         return redirect(url_for('reports'))
+
+#     log_content = log_path.read_text(encoding='utf-8', errors='replace')
+#     return render_template('backup_log.html', record=record, log_content=log_content)
 @app.route('/reports/<int:history_id>/log')
 def view_backup_log(history_id):
     record = BackupHistory.query.get_or_404(history_id)
@@ -1024,13 +1117,245 @@ def view_backup_log(history_id):
     except ValueError:
         abort(404)
 
+    # If the specific log doesn't exist, try to find it
     if not log_path.exists() or not log_path.is_file():
-        flash("The log file could not be found on disk.", "warning")
-        return redirect(url_for('reports'))
+        # Try to find the log file with schedule-specific naming
+        job_id = record.backup_job_id
+        trigger_source = getattr(record, 'trigger_source', 'daily')
+        
+        # Check if the log file exists with schedule-specific name
+        schedule_log_path = logs_root / f"backup_job_{job_id}_{trigger_source}.log"
+        if schedule_log_path.exists():
+            log_path = schedule_log_path
+        else:
+            flash("The log file could not be found on disk.", "warning")
+            return redirect(url_for('reports'))
 
     log_content = log_path.read_text(encoding='utf-8', errors='replace')
     return render_template('backup_log.html', record=record, log_content=log_content)
 
+# @app.route('/logs/job/<int:job_id>')
+# def view_job_logs(job_id):
+#     """View all logs for a specific job"""
+#     job = BackupJob.query.get_or_404(job_id)
+#     logs_dir = Path(app.root_path) / 'backup_logs'
+    
+#     if not logs_dir.exists():
+#         flash("No logs found for this job.", "warning")
+#         return redirect(url_for('backup_jobs'))
+    
+#     # Get all log files for this job
+#     log_files = []
+#     for log_file in logs_dir.glob(f"backup_job_{job_id}_*.log"):
+#         try:
+#             # Extract schedule type from filename
+#             schedule_type = log_file.name.replace(f"backup_job_{job_id}_", "").replace(".log", "")
+#             if schedule_type in ['daily', 'weekly', 'monthly', 'yearly']:
+#                 log_files.append({
+#                     'name': log_file.name,
+#                     'schedule_type': schedule_type,
+#                     'path': str(log_file),
+#                     'size': log_file.stat().st_size,
+#                     'modified': datetime.fromtimestamp(log_file.stat().st_mtime)
+#                 })
+#         except Exception as e:
+#             print(f"Error processing log file {log_file}: {e}")
+    
+#     # Sort by modified time (newest first)
+#     log_files.sort(key=lambda x: x['modified'], reverse=True)
+    
+#     return render_template('job_logs.html', job=job, log_files=log_files)
+
+@app.route('/logs/job/<int:job_id>')
+def view_job_logs(job_id):
+    """View all logs for a specific job"""
+    job = BackupJob.query.get_or_404(job_id)
+    logs_dir = Path(app.root_path) / 'backup_logs'
+    
+    if not logs_dir.exists():
+        flash("No logs found for this job.", "warning")
+        return redirect(url_for('backup_jobs'))
+    
+    # Get all log files for this job
+    log_files = []
+    for log_file in logs_dir.glob(f"backup_job_{job_id}_*.log"):
+        try:
+            # Extract schedule type from filename
+            schedule_type = log_file.name.replace(f"backup_job_{job_id}_", "").replace(".log", "")
+            if schedule_type in ['daily', 'weekly', 'monthly', 'yearly']:
+                log_files.append({
+                    'name': log_file.name,
+                    'schedule_type': schedule_type,
+                    'path': str(log_file),
+                    'size': log_file.stat().st_size,
+                    'modified': datetime.fromtimestamp(log_file.stat().st_mtime)
+                })
+        except Exception as e:
+            print(f"Error processing log file {log_file}: {e}")
+    
+    # Sort by modified time (newest first)
+    log_files.sort(key=lambda x: x['modified'], reverse=True)
+    
+    return render_template('job_logs.html', job=job, log_files=log_files)
+
+# @app.route('/logs/job/<int:job_id>/<schedule_type>')
+# def view_schedule_log(job_id, schedule_type):
+#     """View a specific schedule log"""
+#     job = BackupJob.query.get_or_404(job_id)
+#     logs_dir = Path(app.root_path) / 'backup_logs'
+#     log_path = logs_dir / f"backup_job_{job_id}_{schedule_type}.log"
+    
+#     if not log_path.exists():
+#         flash(f"No log file found for {schedule_type} schedule.", "warning")
+#         return redirect(url_for('view_job_logs', job_id=job_id))
+    
+#     log_content = log_path.read_text(encoding='utf-8', errors='replace')
+    
+#     # Create a fake history record for display
+#     class FakeHistory:
+#         def __init__(self, job, schedule_type):
+#             self.backup_job = job
+#             self.backup_job_id = job.id
+#             self.trigger_source = schedule_type
+#             self.start_time = datetime.fromtimestamp(log_path.stat().st_mtime)
+#             self.end_time = self.start_time
+#             self.status = 'success'  # Default, will be determined from content
+#             self.log_path = str(log_path)
+#             self.file_size = log_path.stat().st_size
+#             self.message = f"Showing {schedule_type} schedule log"
+    
+#     # Try to determine status from log content
+#     status = 'success'
+#     if 'FAILED' in log_content or 'Error' in log_content:
+#         status = 'failed'
+#     elif 'Running' in log_content or 'running' in log_content:
+#         status = 'running'
+    
+#     fake_record = FakeHistory(job, schedule_type)
+#     fake_record.status = status
+    
+#     return render_template('backup_log.html', record=fake_record, log_content=log_content)
+
+@app.route('/logs/job/<int:job_id>/<schedule_type>')
+def view_schedule_log(job_id, schedule_type):
+    """View a specific schedule log"""
+    from datetime import datetime
+    from pathlib import Path
+    
+    job = BackupJob.query.get_or_404(job_id)
+    logs_dir = Path(app.root_path) / 'backup_logs'
+    log_path = logs_dir / f"backup_job_{job_id}_{schedule_type}.log"
+    
+    if not log_path.exists():
+        flash(f"No log file found for {schedule_type} schedule.", "warning")
+        return redirect(url_for('view_job_logs', job_id=job_id))
+    
+    log_content = log_path.read_text(encoding='utf-8', errors='replace')
+    
+    # Create a proper class for the fake history with all required attributes
+    class FakeHistory:
+        def __init__(self, job, schedule_type, log_path):
+            # Add all attributes that might be needed by the template
+            self.id = 9999  # Use a large number to indicate it's a fake record
+            self.backup_job = job
+            self.backup_job_id = job.id
+            self.trigger_source = schedule_type
+            self.start_time = datetime.fromtimestamp(log_path.stat().st_mtime)
+            self.end_time = self.start_time
+            self.status = 'success'  # Default
+            self.log_path = str(log_path)
+            self.file_size = log_path.stat().st_size
+            self.message = f"Showing {schedule_type} schedule log"
+            self.file_path = None  # Add this attribute if needed
+    
+    # Try to determine status from log content
+    status = 'success'
+    log_content_lower = log_content.lower()
+    if 'failed' in log_content_lower or 'error' in log_content_lower:
+        status = 'failed'
+    elif 'running' in log_content_lower:
+        status = 'running'
+    
+    fake_record = FakeHistory(job, schedule_type, log_path)
+    fake_record.status = status
+    
+    return render_template('backup_log.html', record=fake_record, log_content=log_content)
+
+# @app.route('/logs/download/<int:history_id>')
+# def download_log(history_id):
+#     """Download the log file"""
+#     record = BackupHistory.query.get_or_404(history_id)
+    
+#     if not record.log_path:
+#         flash("No log file available for download.", "warning")
+#         return redirect(url_for('reports'))
+    
+#     log_path = Path(record.log_path).resolve()
+#     logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+    
+#     try:
+#         log_path.relative_to(logs_root)
+#     except ValueError:
+#         abort(404)
+    
+#     if not log_path.exists() or not log_path.is_file():
+#         flash("The log file could not be found.", "warning")
+#         return redirect(url_for('reports'))
+    
+#     return send_file(log_path, as_attachment=True, download_name=log_path.name)
+
+@app.route('/logs/download/<int:history_id>')
+def download_log(history_id):
+    """Download the log file"""
+    # If it's a fake record ID (9999), handle differently
+    if history_id == 9999:
+        log_path = request.args.get('log_path')
+        if log_path:
+            return redirect(url_for('download_log_file', log_path=log_path))
+        flash("Invalid log file.", "warning")
+        return redirect(url_for('reports'))
+    
+    record = BackupHistory.query.get_or_404(history_id)
+    
+    if not record.log_path:
+        flash("No log file available for download.", "warning")
+        return redirect(url_for('reports'))
+    
+    log_path = Path(record.log_path).resolve()
+    logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+    
+    try:
+        log_path.relative_to(logs_root)
+    except ValueError:
+        abort(404)
+    
+    if not log_path.exists() or not log_path.is_file():
+        flash("The log file could not be found.", "warning")
+        return redirect(url_for('reports'))
+    
+    return send_file(log_path, as_attachment=True, download_name=log_path.name)
+
+@app.route('/logs/download-file')
+def download_log_file():
+    """Download a log file directly by path"""
+    log_path = request.args.get('log_path')
+    if not log_path:
+        flash("No log file specified.", "warning")
+        return redirect(url_for('reports'))
+    
+    log_path = Path(log_path).resolve()
+    logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+    
+    try:
+        log_path.relative_to(logs_root)
+    except ValueError:
+        abort(404)
+    
+    if not log_path.exists() or not log_path.is_file():
+        flash("The log file could not be found.", "warning")
+        return redirect(url_for('reports'))
+    
+    return send_file(log_path, as_attachment=True, download_name=log_path.name)
 # ============================================
 # SCHEDULER MANAGEMENT ROUTES
 # ============================================

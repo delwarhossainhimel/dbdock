@@ -5,6 +5,9 @@
     <div>
         <h2 class="mb-2">Backup Log</h2>
         <p class="text-muted mb-0">{{ record.backup_job.name }} • {{ record.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+        {% if record.trigger_source %}
+        <span class="badge bg-info mt-1">{{ record.trigger_source|capitalize }} Schedule</span>
+        {% endif %}
     </div>
     <a href="{{ url_for('reports') }}" class="btn btn-outline-secondary">Back to Reports</a>
 </div>
@@ -17,6 +20,10 @@
                 <span class="status-badge status-{{ record.status }}">{{ record.status }}</span>
             </div>
             <div class="col-md-3">
+                <p class="dashboard-stat-label">Trigger</p>
+                <span class="badge bg-info">{{ record.trigger_source|default('Manual')|capitalize }}</span>
+            </div>
+            <div class="col-md-3">
                 <p class="dashboard-stat-label">Started</p>
                 <p class="mb-0">{{ record.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
             </div>
@@ -24,23 +31,158 @@
                 <p class="dashboard-stat-label">Finished</p>
                 <p class="mb-0">{{ record.end_time.strftime('%Y-%m-%d %H:%M:%S') if record.end_time else 'N/A' }}</p>
             </div>
+        </div>
+        <div class="row g-3 mt-2">
             <div class="col-md-3">
                 <p class="dashboard-stat-label">Backup Size</p>
-                <p class="mb-0">{{ record.file_size|filesize }}</p>
+                <p class="mb-0">{{ record.file_size|filesize if record.file_size else 'N/A' }}</p>
+            </div>
+            <div class="col-md-9">
+                <p class="dashboard-stat-label">Log File</p>
+                <p class="mb-0 text-muted small">{{ record.log_path }}</p>
             </div>
         </div>
-        {% if record.log_path %}
-        <p class="text-muted mt-3 mb-0">Log file: {{ record.log_path }}</p>
+        {% if record.message %}
+        <div class="mt-3 p-3 bg-light rounded">
+            <strong>Message:</strong> {{ record.message }}
+        </div>
         {% endif %}
     </div>
 </div>
 
-<div class="card">
+<!-- Available Logs for this Job -->
+{% set job_logs = get_job_logs(record.backup_job_id) %}
+{% if job_logs %}
+<div class="card mb-4">
     <div class="card-header">
+        <h5 class="mb-0">All Logs for {{ record.backup_job.name }}</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Schedule</th>
+                        <th>Log File</th>
+                        <th>Size</th>
+                        <th>Last Modified</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in job_logs %}
+                    <tr>
+                        <td>
+                            <span class="badge bg-{{ 'success' if log.schedule_type == 'daily' else 'primary' if log.schedule_type == 'weekly' else 'warning' if log.schedule_type == 'monthly' else 'danger' }}">
+                                {{ log.schedule_type|capitalize }}
+                            </span>
+                        </td>
+                        <td><code class="small">{{ log.name }}</code></td>
+                        <td>{{ log.size|filesize }}</td>
+                        <td>{{ log.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td>
+                            <a href="{{ url_for('view_schedule_log', job_id=record.backup_job.id, schedule_type=log.schedule_type) }}" class="btn btn-sm btn-outline-primary">View</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Current Log Content -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="mb-0">Detailed Output</h5>
+        <div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="window.print()">
+                <i class="bi bi-printer"></i> Print
+            </button>
+            {% if record.id == 9999 %}
+                <!-- Fake record - download via file path -->
+                <a href="{{ url_for('download_log_file', log_path=record.log_path) }}" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-download"></i> Download
+                </a>
+            {% else %}
+                <!-- Real record - download via history ID -->
+                <a href="{{ url_for('download_log', history_id=record.id) }}" class="btn btn-sm btn-outline-primary">
+                    <i class="bi bi-download"></i> Download
+                </a>
+            {% endif %}
+        </div>
     </div>
     <div class="card-body">
         <pre class="backup-log-view">{{ log_content }}</pre>
     </div>
 </div>
+
+<style>
+    .backup-log-view {
+        margin: 0;
+        padding: 1rem 1.1rem;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: #0f1724;
+        color: #d6e2f1;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 0.88rem;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 70vh;
+        overflow: auto;
+    }
+    
+    .backup-log-view .highlight-success {
+        color: #4ade80;
+    }
+    
+    .backup-log-view .highlight-error {
+        color: #f87171;
+    }
+    
+    .backup-log-view .highlight-warning {
+        color: #fbbf24;
+    }
+    
+    .backup-log-view .highlight-info {
+        color: #60a5fa;
+    }
+    
+    @media print {
+        .btn {
+            display: none !important;
+        }
+        .backup-log-view {
+            max-height: none !important;
+            overflow: visible !important;
+        }
+    }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Add syntax highlighting to log content
+    const logView = document.querySelector('.backup-log-view');
+    if (logView) {
+        let content = logView.innerHTML;
+        
+        // Highlight success messages
+        content = content.replace(/(SUCCESS|Success|✅)/g, '<span class="highlight-success">$1</span>');
+        
+        // Highlight error messages
+        content = content.replace(/(FAILED|Error|❌|ERROR)/g, '<span class="highlight-error">$1</span>');
+        
+        // Highlight warnings
+        content = content.replace(/(WARNING|Warning|⚠️)/g, '<span class="highlight-warning">$1</span>');
+        
+        // Highlight info
+        content = content.replace(/(INFO|Info|ℹ️|🔹|📊|📅|🔄)/g, '<span class="highlight-info">$1</span>');
+        
+        logView.innerHTML = content;
+    }
+});
+</script>
 {% endblock %}

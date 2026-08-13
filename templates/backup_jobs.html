@@ -47,6 +47,9 @@
 </div>
 
 <!-- Jobs List -->
+
+
+
 <div id="jobsContainer">
     <div id="jobsList">
         {% for job in jobs %}
@@ -607,140 +610,222 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // ============================================
-    // 2. SEARCH & FILTER
+    // 2. SEARCH, FILTER & PAGINATION
     // ============================================
     const searchInput = document.getElementById('searchJobs');
     const statusFilter = document.getElementById('statusFilter');
     const perPageSelect = document.getElementById('perPageSelect');
-    const jobItems = document.querySelectorAll('.job-item');
-    
+
+    const jobItems = Array.from(document.querySelectorAll('.job-item'));
+
     let currentPage = 1;
     let itemsPerPage = parseInt(perPageSelect ? perPageSelect.value : 10);
 
-    function filterJobs() {
-        const searchTerm = searchInput.value.toLowerCase().trim();
-        const statusValue = statusFilter.value;
-        let visibleCount = 0;
+    // This stores the jobs matching the search/filter.
+    // IMPORTANT: Do not calculate this from display:none.
+    let filteredJobs = [...jobItems];
 
-        jobItems.forEach(function(item) {
+    function getFilteredJobs() {
+        const searchTerm = searchInput
+            ? searchInput.value.toLowerCase().trim()
+            : '';
+
+        const statusValue = statusFilter
+            ? statusFilter.value
+            : 'all';
+
+        return jobItems.filter(function(item) {
             const name = item.dataset.name || '';
             const server = item.dataset.server || '';
             const location = item.dataset.location || '';
             const status = item.dataset.status || '';
-            
-            const matchesSearch = !searchTerm || 
-                name.includes(searchTerm) || 
-                server.includes(searchTerm) || 
+
+            const matchesSearch =
+                !searchTerm ||
+                name.includes(searchTerm) ||
+                server.includes(searchTerm) ||
                 location.includes(searchTerm);
-            
-            const matchesStatus = statusValue === 'all' || status === statusValue;
-            
-            if (matchesSearch && matchesStatus) {
-                item.style.display = '';
-                visibleCount++;
-            } else {
-                item.style.display = 'none';
-            }
+
+            const matchesStatus =
+                statusValue === 'all' ||
+                status === statusValue;
+
+            return matchesSearch && matchesStatus;
         });
+    }
+
+    function filterJobs() {
+        filteredJobs = getFilteredJobs();
 
         currentPage = 1;
-        applyPagination(visibleCount);
-        updatePaginationInfo(visibleCount);
+
+        renderPagination();
+    }
+
+    function renderPagination() {
+        const totalItems = filteredJobs.length;
+        const totalPages = Math.max(
+            1,
+            Math.ceil(totalItems / itemsPerPage)
+        );
+
+        // Make sure current page is valid
+        if (currentPage > totalPages) {
+            currentPage = totalPages;
+        }
+
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        const endIndex = startIndex + itemsPerPage;
+
+        // Hide everything first
+        jobItems.forEach(function(item) {
+            item.style.display = 'none';
+        });
+
+        // Show only jobs belonging to current page
+        filteredJobs
+            .slice(startIndex, endIndex)
+            .forEach(function(item) {
+                item.style.display = '';
+            });
+
+        updatePaginationInfo(totalItems);
+        updatePaginationControls(totalPages);
     }
 
     function updatePaginationInfo(totalItems) {
         const info = document.getElementById('paginationInfo');
+
         if (!info) return;
-        
+
         if (totalItems === 0) {
             info.textContent = 'No jobs found';
             return;
         }
-        
+
         const start = (currentPage - 1) * itemsPerPage + 1;
-        const end = Math.min(currentPage * itemsPerPage, totalItems);
-        info.textContent = `Showing ${start}-${end} of ${totalItems} jobs`;
-    }
+        const end = Math.min(
+            currentPage * itemsPerPage,
+            totalItems
+        );
 
-    function applyPagination(totalItems) {
-        const allItems = document.querySelectorAll('.job-item');
-        const visibleJobs = Array.from(allItems).filter(item => item.style.display !== 'none');
-        const totalPages = Math.ceil(visibleJobs.length / itemsPerPage) || 1;
-        
-        if (currentPage > totalPages) currentPage = totalPages;
-        
-        const start = (currentPage - 1) * itemsPerPage;
-        const end = start + itemsPerPage;
-
-        allItems.forEach(function(item) {
-            const isVisible = item.style.display !== 'none';
-            if (isVisible) {
-                const visibleIndex = visibleJobs.indexOf(item);
-                if (visibleIndex >= start && visibleIndex < end) {
-                    item.style.display = '';
-                } else {
-                    item.style.display = 'none';
-                }
-            }
-        });
-
-        updatePaginationControls(totalPages);
-        updatePaginationInfo(visibleJobs.length);
+        info.textContent =
+            `Showing ${start}-${end} of ${totalItems} jobs`;
     }
 
     function updatePaginationControls(totalPages) {
         const controls = document.getElementById('paginationControls');
+
         if (!controls) return;
 
         let html = '';
-        
-        html += `<li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
-            <a class="page-link" href="#" data-page="${currentPage - 1}" tabindex="-1">Previous</a>
-        </li>`;
-        
+
+        // Previous
+        html += `
+            <li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
+                <a class="page-link" href="#" data-page="${currentPage - 1}">
+                    Previous
+                </a>
+            </li>
+        `;
+
+        // Page numbers
         for (let i = 1; i <= totalPages; i++) {
-            if (i === 1 || i === totalPages || Math.abs(i - currentPage) <= 2) {
-                html += `<li class="page-item ${i === currentPage ? 'active' : ''}">
-                    <a class="page-link" href="#" data-page="${i}">${i}</a>
-                </li>`;
-            } else if (i === currentPage - 3 || i === currentPage + 3) {
-                html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+
+            // Show:
+            // first page
+            // last page
+            // pages around current page
+            if (
+                i === 1 ||
+                i === totalPages ||
+                Math.abs(i - currentPage) <= 2
+            ) {
+                html += `
+                    <li class="page-item ${i === currentPage ? 'active' : ''}">
+                        <a class="page-link" href="#" data-page="${i}">
+                            ${i}
+                        </a>
+                    </li>
+                `;
+            }
+            // Ellipsis
+            else if (
+                i === currentPage - 3 ||
+                i === currentPage + 3
+            ) {
+                html += `
+                    <li class="page-item disabled">
+                        <span class="page-link">...</span>
+                    </li>
+                `;
             }
         }
-        
-        html += `<li class="page-item ${currentPage >= totalPages ? 'disabled' : ''}">
-            <a class="page-link" href="#" data-page="${currentPage + 1}">Next</a>
-        </li>`;
-        
+
+        // Next
+        html += `
+            <li class="page-item ${currentPage >= totalPages ? 'disabled' : ''}">
+                <a class="page-link" href="#" data-page="${currentPage + 1}">
+                    Next
+                </a>
+            </li>
+        `;
+
         controls.innerHTML = html;
 
-        controls.querySelectorAll('.page-link[data-page]').forEach(function(link) {
-            link.addEventListener('click', function(e) {
-                e.preventDefault();
-                const page = parseInt(this.dataset.page);
-                const allItems = document.querySelectorAll('.job-item');
-                const totalVisible = Array.from(allItems).filter(item => item.style.display !== 'none').length;
-                const totalPagesCalc = Math.ceil(totalVisible / itemsPerPage) || 1;
-                
-                if (page >= 1 && page <= totalPagesCalc) {
-                    currentPage = page;
-                    applyPagination(totalVisible);
-                }
+        // Page click handlers
+        controls.querySelectorAll('.page-link[data-page]')
+            .forEach(function(link) {
+
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+
+                    const page = parseInt(this.dataset.page);
+
+                    // IMPORTANT:
+                    // Use filteredJobs.length, NOT display:none
+                    const totalPagesCalc = Math.max(
+                        1,
+                        Math.ceil(filteredJobs.length / itemsPerPage)
+                    );
+
+                    if (
+                        page >= 1 &&
+                        page <= totalPagesCalc
+                    ) {
+                        currentPage = page;
+                        renderPagination();
+                    }
+                });
             });
-        });
     }
 
-    if (searchInput) searchInput.addEventListener('input', filterJobs);
-    if (statusFilter) statusFilter.addEventListener('change', filterJobs);
-    if (perPageSelect) {
-        perPageSelect.addEventListener('change', function() {
-            itemsPerPage = parseInt(this.value);
-            currentPage = 1;
+    // Search
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
             filterJobs();
         });
     }
 
-    setTimeout(filterJobs, 100);
+    // Status filter
+    if (statusFilter) {
+        statusFilter.addEventListener('change', function() {
+            filterJobs();
+        });
+    }
+
+    // Items per page
+    if (perPageSelect) {
+        perPageSelect.addEventListener('change', function() {
+            itemsPerPage = parseInt(this.value);
+            currentPage = 1;
+
+            filterJobs();
+        });
+    }
+
+    // Initial pagination
+    filterJobs();
 
     // ============================================
     // 3. LOAD DATABASES FOR SERVER SELECTION

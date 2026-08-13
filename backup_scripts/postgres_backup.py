@@ -30,6 +30,8 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         
         backup_files = []
         database_results = []
+        total_success = 0
+        total_failed = 0
         
         for database in databases:
             # Generate filename with new format: database_YYYY-MM-DD.sql.gz
@@ -85,31 +87,38 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                             'message': 'Backup completed successfully',
                             'file_size': file_size,
                         })
+                        total_success += 1
                     else:
+                        print(f"✗ Backup file was not created properly for database {database}")
                         database_results.append({
                             'database': database,
                             'status': 'failed',
                             'message': f"Backup file was not created properly for database {database}",
                             'file_size': 0,
                         })
+                        total_failed += 1
                 else:
                     # Get error message from pg_dump
                     _, stderr = pg_dump_process.communicate()
                     error_msg = stderr.decode() if stderr else "Unknown error"
+                    print(f"✗ PostgreSQL backup failed for database {database}: {error_msg}")
                     database_results.append({
                         'database': database,
                         'status': 'failed',
                         'message': f"PostgreSQL backup failed for database {database}: {error_msg}",
                         'file_size': 0,
                     })
+                    total_failed += 1
                     
             except Exception as e:
+                print(f"✗ Error during backup process for database {database}: {str(e)}")
                 database_results.append({
                     'database': database,
                     'status': 'failed',
                     'message': f"Error during backup process for database {database}: {str(e)}",
                     'file_size': 0,
                 })
+                total_failed += 1
 
         if backup_files:
             result = upload_backups_for_schedules(location, folder_path, schedule_types, backup_files)
@@ -119,14 +128,23 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         # Clean up only this job's temporary directory
         cleanup_job_tmp_directory(job_tmp_dir)
 
-        failed_results = [item for item in database_results if item['status'] != 'success']
-        if failed_results and result[0]:
-            return False, build_partial_failure_message(database_results), result[2], result[3], database_results
-
-        if not result[0]:
-            return False, result[1], result[2], result[3], database_results
-
-        return True, result[1], result[2], result[3], database_results
+        # Determine overall success based on ALL databases
+        # If any database failed, the overall backup is considered PARTIAL or FAILED
+        if total_failed == 0 and total_success > 0:
+            # All databases succeeded
+            message = f"Successfully backed up all {total_success} databases"
+            return True, message, result[2], result[3], database_results
+        elif total_success > 0 and total_failed > 0:
+            # Partial success - some databases failed
+            message = f"Partial success: {total_success} succeeded, {total_failed} failed out of {len(databases)} databases"
+            return False, message, result[2], result[3], database_results
+        elif total_success == 0 and total_failed > 0:
+            # All databases failed
+            message = f"All {total_failed} databases failed to backup"
+            return False, message, None, 0, database_results
+        else:
+            # No databases processed
+            return False, "No databases were processed", None, 0, database_results
             
     except Exception as e:
         # Clean up on error too - but only this job's directory
