@@ -60,7 +60,7 @@ class StorageLocation(db.Model):
 
 class BackupJob(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, unique=True)  # Added unique=True
+    name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text)
     database_server_id = db.Column(db.Integer, db.ForeignKey('database_server.id'), nullable=False)
     databases = db.Column(db.Text, nullable=False)  # JSON string of selected databases

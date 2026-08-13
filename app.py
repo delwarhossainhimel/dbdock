@@ -3,7 +3,7 @@ from models import db, DatabaseServer, StorageLocation, BackupJob, BackupHistory
 from werkzeug.security import check_password_hash, generate_password_hash
 from dotenv import load_dotenv
 from scheduler import init_scheduler, schedule_backup_job, unschedule_backup_job, enqueue_immediate_backup_job, send_test_email
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from job_schedules import (
     build_schedule_config_from_form,
     get_cron_expression,
@@ -18,9 +18,25 @@ import fcntl
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote_plus
+
 load_dotenv()
+
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///dbDock.db'
+
+# MySQL Configuration from Environment Variables
+MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
+MYSQL_PORT = os.getenv('MYSQL_PORT', '3306')
+MYSQL_USER = os.getenv('MYSQL_USER', 'root')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', '')
+MYSQL_DATABASE = os.getenv('MYSQL_DATABASE', 'dbdock')
+MYSQL_CHARSET = os.getenv('MYSQL_CHARSET', 'utf8mb4')
+
+encoded_password = quote_plus(MYSQL_PASSWORD)
+# Build MySQL connection string with encoded password
+app.config['SQLALCHEMY_DATABASE_URI'] = (
+    f"mysql+pymysql://{MYSQL_USER}:{encoded_password}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset={MYSQL_CHARSET}"
+)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
@@ -28,6 +44,7 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 users = {
     os.getenv('ADMIN_USER'): generate_password_hash(os.getenv('ADMIN_PASS'))
 }
+
 # Only check for multiple instances when running directly
 if __name__ == '__main__' or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
     instance_lock_file = None
@@ -81,19 +98,39 @@ def inject_schedule_helpers():
     }
 
 def ensure_database_schema():
-    inspector = db.session.execute(text("PRAGMA table_info(backup_job)")).fetchall()
-    column_names = {column[1] for column in inspector}
+    """Ensure MySQL schema has all required columns"""
+    try:
+        inspector = db.engine.execute(text("""
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'backup_job' 
+            AND TABLE_SCHEMA = DATABASE()
+        """))
+        column_names = {row[0] for row in inspector}
 
-    if 'schedule_config' not in column_names:
-        db.session.execute(text("ALTER TABLE backup_job ADD COLUMN schedule_config TEXT"))
+        # Add missing columns for backup_job
+        if 'schedule_config' not in column_names:
+            db.session.execute(text("ALTER TABLE backup_job ADD COLUMN schedule_config TEXT"))
+            print("✅ Added schedule_config column to backup_job")
 
-    history_inspector = db.session.execute(text("PRAGMA table_info(backup_history)")).fetchall()
-    history_column_names = {column[1] for column in history_inspector}
+        # Check backup_history columns
+        inspector = db.engine.execute(text("""
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'backup_history' 
+            AND TABLE_SCHEMA = DATABASE()
+        """))
+        history_column_names = {row[0] for row in inspector}
 
-    if 'log_path' not in history_column_names:
-        db.session.execute(text("ALTER TABLE backup_history ADD COLUMN log_path TEXT"))
+        if 'log_path' not in history_column_names:
+            db.session.execute(text("ALTER TABLE backup_history ADD COLUMN log_path VARCHAR(500)"))
+            print("✅ Added log_path column to backup_history")
 
-    db.session.commit()
+        db.session.commit()
+        print("✅ Database schema check completed")
+    except Exception as e:
+        print(f"⚠️ Error checking database schema: {e}")
+        db.session.rollback()
 
 def migrate_backup_job_schedules():
     jobs = BackupJob.query.all()
@@ -130,11 +167,74 @@ def migrate_backup_job_schedules():
 
     if updated:
         db.session.commit()
+        print("✅ Migrated backup job schedules")
+
+def add_unique_constraint_to_job_name():
+    """Add unique constraint to backup_job name if it doesn't exist"""
+    try:
+        # Check if the constraint already exists
+        result = db.session.execute(text("""
+            SELECT CONSTRAINT_NAME 
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS 
+            WHERE TABLE_NAME = 'backup_job' 
+            AND CONSTRAINT_TYPE = 'UNIQUE'
+            AND TABLE_SCHEMA = DATABASE()
+        """))
+        
+        constraints = [row[0] for row in result]
+        
+        # If no unique constraint exists, add it
+        if not any('name' in constraint.lower() for constraint in constraints):
+            # First, check for duplicate names
+            duplicates = db.session.execute(text("""
+                SELECT name, COUNT(*) as count 
+                FROM backup_job 
+                GROUP BY name 
+                HAVING COUNT(*) > 1
+            """)).fetchall()
+            
+            if duplicates:
+                print("⚠️ Found duplicate job names. Please resolve them manually:")
+                for dup in duplicates:
+                    print(f"   - {dup[0]} appears {dup[1]} times")
+                print("💡 You can rename duplicates before adding unique constraint")
+                return
+            
+            # Add unique constraint
+            db.session.execute(text("""
+                ALTER TABLE backup_job 
+                ADD CONSTRAINT unique_job_name UNIQUE (name)
+            """))
+            db.session.commit()
+            print("✅ Added unique constraint to backup_job.name")
+    except Exception as e:
+        print(f"⚠️ Error adding unique constraint: {e}")
+        db.session.rollback()
+
+def test_mysql_connection():
+    """Test MySQL connection on startup"""
+    try:
+        # Test connection by executing a simple query
+        result = db.session.execute(text("SELECT 1")).fetchone()
+        print(f"✅ MySQL connection successful! Connected to {MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}")
+        return True
+    except Exception as e:
+        print(f"❌ MySQL connection failed: {e}")
+        print(f"   Host: {MYSQL_HOST}")
+        print(f"   Port: {MYSQL_PORT}")
+        print(f"   Database: {MYSQL_DATABASE}")
+        print(f"   User: {MYSQL_USER}")
+        return False
 
 # Initialize the application
 with app.app_context():
+    # Test MySQL connection first
+    test_mysql_connection()
+    
+    # Create tables if they don't exist
     db.create_all()
     ensure_database_schema()
+    add_unique_constraint_to_job_name()
     migrate_backup_job_schedules()
     
     print("🔄 Initializing scheduler...")
@@ -167,11 +267,25 @@ with app.app_context():
         
     else:
         print("❌ Scheduler failed to initialize completely")
+
 @app.route('/health', methods=['GET'])
 def health_check():
+    # Check database connection
+    try:
+        db.session.execute(text("SELECT 1"))
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
     return jsonify({
         "status": "healthy",
-        "message": "Application is running fine"
+        "message": "Application is running fine",
+        "database": {
+            "host": MYSQL_HOST,
+            "port": MYSQL_PORT,
+            "database": MYSQL_DATABASE,
+            "status": db_status
+        }
     }), 200
 
 @app.before_request
@@ -195,21 +309,17 @@ def login():
             flash("Invalid username or password", "danger")
     return render_template('login.html')
 
-
 @app.route('/logout')
 def logout():
     session.pop('user', None)
     flash("You have been logged out.", "info")
     return redirect(url_for('login'))
+
 @app.route('/')
 def dashboard():
     if 'user' not in session:
         return redirect(url_for('login'))
     # your existing dashboard logic here
-    servers = 5
-    locations = 3
-    jobs = 8
-    history = []  # Example data
     servers = DatabaseServer.query.filter_by(is_active=True).count()
     locations = StorageLocation.query.filter_by(is_active=True).count()
     jobs = BackupJob.query.filter_by(is_active=True).count()
@@ -221,7 +331,10 @@ def dashboard():
                           jobs=jobs,
                           history=recent_history)
 
-# Database Servers Routes
+# ============================================
+# DATABASE SERVERS ROUTES
+# ============================================
+
 @app.route('/database_servers', methods=['GET', 'POST'])
 def database_servers():
     if request.method == 'POST':
@@ -302,7 +415,10 @@ def test_connection(server_id):
     success, message = server.test_connection()
     return jsonify({'success': success, 'message': message})
 
-# Storage Locations Routes
+# ============================================
+# STORAGE LOCATIONS ROUTES
+# ============================================
+
 @app.route('/storage_locations', methods=['GET', 'POST'])
 def storage_locations():
     if request.method == 'POST':
@@ -341,7 +457,7 @@ def storage_locations():
     
     locations = StorageLocation.query.all()
     return render_template('storage_locations.html', locations=locations)
-# Edit storage location - show form
+
 @app.route('/edit_location/<int:location_id>', methods=['GET'])
 def edit_location(location_id):
     try:
@@ -356,7 +472,6 @@ def edit_location(location_id):
         print(f"Error in edit_location: {str(e)}")
         return f"Error: {str(e)}", 500
 
-# Edit storage location - process form
 @app.route('/edit_location/<int:location_id>', methods=['POST'])
 def update_location(location_id):
     location = StorageLocation.query.get_or_404(location_id)
@@ -388,6 +503,7 @@ def update_location(location_id):
     db.session.commit()
     
     return redirect(url_for('storage_locations'))
+
 @app.route('/delete_location/<int:location_id>', methods=['POST'])
 def delete_location(location_id):
     location = StorageLocation.query.get_or_404(location_id)
@@ -406,7 +522,10 @@ def delete_location(location_id):
     
     return jsonify({'success': True, 'message': 'Storage location deleted successfully'})
 
-# Backup Jobs Routes
+# ============================================
+# BACKUP JOBS ROUTES
+# ============================================
+
 @app.route('/backup_jobs', methods=['GET', 'POST'])
 def backup_jobs():
     if request.method == 'POST':
@@ -419,6 +538,66 @@ def backup_jobs():
         schedule_config = build_schedule_config_from_form(request.form)
         notification_email = request.form.get('notification_email')
 
+        # Check if job name already exists
+        existing_job = BackupJob.query.filter_by(name=name).first()
+        if existing_job:
+            flash(f'A backup job with the name "{name}" already exists. Please choose a different name.', "danger")
+            
+            # Get all data needed for the template
+            servers = DatabaseServer.query.filter_by(is_active=True).all()
+            locations = StorageLocation.query.filter_by(is_active=True).all()
+            jobs = BackupJob.query.order_by(BackupJob.name.asc()).all()
+            
+            # Get latest history for each job
+            latest_history_by_job = {}
+            for job in jobs:
+                job.normalized_schedule_config = normalize_schedule_config(
+                    job.schedule_config,
+                    job.schedule_type,
+                    job.cron_expression,
+                    fallback_retention=job.retention_policy,
+                )
+            for record in BackupHistory.query.order_by(
+                BackupHistory.backup_job_id.asc(),
+                BackupHistory.start_time.desc(),
+                BackupHistory.id.desc(),
+            ).all():
+                latest_history_by_job.setdefault(record.backup_job_id, record)
+            for job in jobs:
+                job.latest_history = latest_history_by_job.get(job.id)
+            
+            # Prepare form data to re-populate the modal
+            form_data = {
+                'name': name,
+                'description': description,
+                'database_server_id': database_server_id,
+                'databases': databases,
+                'storage_location_id': storage_location_id,
+                'folder_path': folder_path,
+                'notification_email': notification_email,
+                'schedule_types': request.form.getlist('schedule_types'),
+                'daily_time': request.form.get('daily_time'),
+                'daily_retention': request.form.get('daily_retention'),
+                'weekly_day': request.form.get('weekly_day'),
+                'weekly_time': request.form.get('weekly_time'),
+                'weekly_retention': request.form.get('weekly_retention'),
+                'monthly_day': request.form.get('monthly_day'),
+                'monthly_time': request.form.get('monthly_time'),
+                'monthly_retention': request.form.get('monthly_retention'),
+                'yearly_month': request.form.get('yearly_month'),
+                'yearly_day': request.form.get('yearly_day'),
+                'yearly_time': request.form.get('yearly_time'),
+                'yearly_retention': request.form.get('yearly_retention'),
+            }
+            
+            # Pass form data and error flag to template
+            return render_template('backup_jobs.html', 
+                                  servers=servers, 
+                                  locations=locations, 
+                                  jobs=jobs,
+                                  error=True,
+                                  form_data=form_data)
+
         is_valid, validation_message = validate_schedule_config(schedule_config)
         if not is_valid:
             flash(validation_message, "danger")
@@ -427,38 +606,93 @@ def backup_jobs():
         primary_schedule_type = get_primary_schedule_type(schedule_config)
         cron_expression = get_cron_expression(primary_schedule_type, schedule_config[primary_schedule_type])
         
-        job = BackupJob(
-            name=name,
-            description=description,
-            database_server_id=database_server_id,
-            databases=json.dumps(databases),
-            storage_location_id=storage_location_id,
-            folder_path=folder_path,
-            schedule_type=primary_schedule_type,
-            cron_expression=cron_expression,
-            schedule_config=json.dumps(schedule_config),
-            retention_policy=int(schedule_config[primary_schedule_type]['retention']),
-            notification_email=notification_email
-        )
+        # Handle "All Databases" - store as special value
+        if '__all__' in databases:
+            databases = ['__all__']  # Store as '__all__' to indicate auto-detect
         
-        db.session.add(job)
-        db.session.commit()
-        
-        # Schedule the job
-        schedule_backup_job(scheduler, job)
-        
-        return redirect(url_for('backup_jobs'))
+        try:
+            job = BackupJob(
+                name=name,
+                description=description,
+                database_server_id=database_server_id,
+                databases=json.dumps(databases),
+                storage_location_id=storage_location_id,
+                folder_path=folder_path,
+                schedule_type=primary_schedule_type,
+                cron_expression=cron_expression,
+                schedule_config=json.dumps(schedule_config),
+                retention_policy=int(schedule_config[primary_schedule_type]['retention']),
+                notification_email=notification_email
+            )
+            
+            db.session.add(job)
+            db.session.commit()
+            
+            # Schedule the job
+            schedule_backup_job(scheduler, job)
+            
+            flash(f'Backup job "{name}" created successfully!', "success")
+            return redirect(url_for('backup_jobs'))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error creating job: {str(e)}', "danger")
+            return redirect(url_for('backup_jobs'))
     
+    # GET request - existing code with pagination
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 10, type=int)
+    search = request.args.get('search', '', type=str)
+    status_filter = request.args.get('status', 'all', type=str)
+    
+    # Build query
+    query = BackupJob.query
+    
+    # Apply search filter
+    if search:
+        search_term = f"%{search}%"
+        query = query.join(DatabaseServer).join(StorageLocation).filter(
+            or_(
+                BackupJob.name.ilike(search_term),
+                DatabaseServer.name.ilike(search_term),
+                StorageLocation.name.ilike(search_term)
+            )
+        )
+    
+    # Apply status filter
+    if status_filter == 'active':
+        query = query.filter_by(is_active=True)
+    elif status_filter == 'inactive':
+        query = query.filter_by(is_active=False)
+    
+    # Order by name
+    query = query.order_by(BackupJob.name.asc())
+    
+    # Paginate
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    jobs = pagination.items
+    
+    # Get all servers and locations for the modal
     servers = DatabaseServer.query.filter_by(is_active=True).all()
     locations = StorageLocation.query.filter_by(is_active=True).all()
-    jobs = BackupJob.query.order_by(BackupJob.name.asc()).all()
+    
+    # Get latest history for each job
     latest_history_by_job = {}
-    for record in BackupHistory.query.order_by(
-        BackupHistory.backup_job_id.asc(),
-        BackupHistory.start_time.desc(),
-        BackupHistory.id.desc(),
-    ).all():
-        latest_history_by_job.setdefault(record.backup_job_id, record)
+    job_ids = [job.id for job in jobs]
+    if job_ids:
+        history_records = BackupHistory.query.filter(
+            BackupHistory.backup_job_id.in_(job_ids)
+        ).order_by(
+            BackupHistory.backup_job_id.asc(),
+            BackupHistory.start_time.desc(),
+            BackupHistory.id.desc(),
+        ).all()
+        
+        for record in history_records:
+            if record.backup_job_id not in latest_history_by_job:
+                latest_history_by_job[record.backup_job_id] = record
+    
+    # Add normalized schedule config and latest history to each job
     for job in jobs:
         job.normalized_schedule_config = normalize_schedule_config(
             job.schedule_config,
@@ -467,22 +701,37 @@ def backup_jobs():
             fallback_retention=job.retention_policy,
         )
         job.latest_history = latest_history_by_job.get(job.id)
+    
     return render_template('backup_jobs.html', 
-                          servers=servers, 
-                          locations=locations, 
-                          jobs=jobs)
+                          jobs=jobs,
+                          servers=servers,
+                          locations=locations,
+                          pagination=pagination,
+                          search=search,
+                          status_filter=status_filter,
+                          per_page=per_page)
 
 @app.route('/delete_job/<int:job_id>', methods=['POST'])
 def delete_job(job_id):
     job = BackupJob.query.get_or_404(job_id)
     
-    # Remove the job from scheduler
-    unschedule_backup_job(scheduler, job_id)
-    
-    db.session.delete(job)
-    db.session.commit()
-    
-    return jsonify({'success': True, 'message': 'Backup job deleted successfully'})
+    try:
+        # Remove the job from scheduler
+        unschedule_backup_job(scheduler, job_id)
+        
+        # First, delete all backup history records for this job
+        # This prevents the foreign key constraint error
+        BackupHistory.query.filter_by(backup_job_id=job_id).delete()
+        
+        # Then delete the job
+        db.session.delete(job)
+        db.session.commit()
+        
+        return jsonify({'success': True, 'message': 'Backup job deleted successfully'})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error deleting job {job_id}: {str(e)}")
+        return jsonify({'success': False, 'message': f'Error deleting job: {str(e)}'}), 500
 
 @app.route('/edit_job/<int:job_id>', methods=['GET'])
 def edit_job(job_id):
@@ -510,10 +759,24 @@ def edit_job(job_id):
 def update_job(job_id):
     job = BackupJob.query.get_or_404(job_id)
     
-    job.name = request.form.get('name')
+    new_name = request.form.get('name')
+    
+    # Check if the new name conflicts with another job
+    if new_name != job.name:
+        existing_job = BackupJob.query.filter_by(name=new_name).first()
+        if existing_job:
+            flash(f'A backup job with the name "{new_name}" already exists. Please choose a different name.', "danger")
+            return redirect(url_for('edit_job', job_id=job_id))
+    
+    job.name = new_name
     job.description = request.form.get('description')
     job.database_server_id = request.form.get('database_server')
-    job.databases = json.dumps(request.form.getlist('databases'))
+    
+    databases = request.form.getlist('databases')
+    if '__all__' in databases:
+        databases = ['__all__']
+    job.databases = json.dumps(databases)
+    
     job.storage_location_id = request.form.get('storage_location')
     job.folder_path = request.form.get('folder_path')
     job.notification_email = request.form.get('notification_email')
@@ -529,10 +792,14 @@ def update_job(job_id):
     job.schedule_config = json.dumps(schedule_config)
     job.retention_policy = int(schedule_config[job.schedule_type]['retention'])
     
-    db.session.commit()
-    
-    # Reschedule the job
-    schedule_backup_job(scheduler, job)
+    try:
+        db.session.commit()
+        # Reschedule the job
+        schedule_backup_job(scheduler, job)
+        flash(f'Backup job "{job.name}" updated successfully!', "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error updating job: {str(e)}', "danger")
     
     return redirect(url_for('backup_jobs'))
 
@@ -544,20 +811,6 @@ def run_job(job_id):
         return jsonify({'success': False, 'message': 'Scheduler is not running, so the job could not be queued.'}), 503
 
     return jsonify({'success': True, 'message': 'Backup job queued successfully and is running in the background.'})
-
-@app.route('/test_email', methods=['POST'])
-def test_email():
-    payload = request.get_json(silent=True) or {}
-    recipient_email = (payload.get('email') or '').strip()
-
-    if not recipient_email:
-        return jsonify({'success': False, 'message': 'Enter a recipient email first.'}), 400
-
-    try:
-        send_test_email(recipient_email)
-        return jsonify({'success': True, 'message': f'Test email sent to {recipient_email}.'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 400
 
 @app.route('/toggle_job/<int:job_id>', methods=['POST'])
 def toggle_job(job_id):
@@ -574,7 +827,120 @@ def toggle_job(job_id):
     
     return jsonify({'success': True, 'message': message, 'is_active': job.is_active})
 
-# API Routes
+# ============================================
+# EMAIL ROUTES
+# ============================================
+
+@app.route('/test_email', methods=['POST'])
+def test_email():
+    payload = request.get_json(silent=True) or {}
+    recipient_email = (payload.get('email') or '').strip()
+
+    if not recipient_email:
+        return jsonify({'success': False, 'message': 'Enter a recipient email first.'}), 400
+
+    try:
+        send_test_email(recipient_email)
+        return jsonify({'success': True, 'message': f'Test email sent to {recipient_email}.'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+# ============================================
+# API ROUTES
+# ============================================
+
+@app.route('/api/jobs')
+def api_get_jobs():
+    """API endpoint for getting jobs with pagination and filtering"""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 10, type=int)
+    search = request.args.get('search', '', type=str)
+    status = request.args.get('status', 'all', type=str)
+    
+    query = BackupJob.query
+    
+    if search:
+        search_term = f"%{search}%"
+        query = query.join(DatabaseServer).join(StorageLocation).filter(
+            or_(
+                BackupJob.name.ilike(search_term),
+                DatabaseServer.name.ilike(search_term),
+                StorageLocation.name.ilike(search_term)
+            )
+        )
+    
+    if status == 'active':
+        query = query.filter_by(is_active=True)
+    elif status == 'inactive':
+        query = query.filter_by(is_active=False)
+    
+    query = query.order_by(BackupJob.name.asc())
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+    
+    jobs = []
+    for job in pagination.items:
+        databases = json.loads(job.databases) if job.databases else []
+        jobs.append({
+            'id': job.id,
+            'name': job.name,
+            'description': job.description,
+            'is_active': job.is_active,
+            'databases': databases,
+            'auto_detect': '__all__' in databases,
+            'database_server': {
+                'id': job.database_server.id,
+                'name': job.database_server.name,
+                'type': job.database_server.type.value
+            },
+            'storage_location': {
+                'id': job.storage_location.id,
+                'name': job.storage_location.name,
+                'type': job.storage_location.type.value
+            },
+            'folder_path': job.folder_path,
+            'schedule_type': job.schedule_type,
+            'cron_expression': job.cron_expression,
+            'retention_policy': job.retention_policy,
+            'notification_email': job.notification_email,
+            'created_at': job.created_at.isoformat() if job.created_at else None,
+            'updated_at': job.updated_at.isoformat() if job.updated_at else None,
+        })
+    
+    return jsonify({
+        'jobs': jobs,
+        'total': pagination.total,
+        'page': pagination.page,
+        'per_page': pagination.per_page,
+        'pages': pagination.pages,
+        'has_prev': pagination.has_prev,
+        'has_next': pagination.has_next,
+        'prev_num': pagination.prev_num,
+        'next_num': pagination.next_num,
+    })
+
+@app.route('/api/check-job-name', methods=['POST'])
+def check_job_name():
+    """Check if a job name already exists"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'exists': False, 'error': 'No data provided'}), 400
+            
+        name = data.get('name', '').strip()
+        exclude_id = data.get('exclude_id')
+        
+        if not name:
+            return jsonify({'exists': False, 'error': 'Name is required'}), 400
+        
+        query = BackupJob.query.filter(db.func.lower(BackupJob.name) == db.func.lower(name))
+        if exclude_id:
+            query = query.filter(BackupJob.id != exclude_id)
+        
+        exists = query.first() is not None
+        return jsonify({'exists': exists})
+    except Exception as e:
+        return jsonify({'exists': False, 'error': str(e)}), 500
+
 @app.route('/get_databases/<int:server_id>')
 def get_databases(server_id):
     server = DatabaseServer.query.get_or_404(server_id)
@@ -607,12 +973,17 @@ def get_databases(server_id):
             databases = [db[0] for db in cursor.fetchall() if db[0] != 'postgres']
             cursor.close()
             conn.close()
+        else:
+            return jsonify({'success': False, 'message': 'Unsupported database type'})
         
         return jsonify({'success': True, 'databases': databases})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
-# Reports Route
+# ============================================
+# REPORTS ROUTES
+# ============================================
+
 @app.route('/reports')
 def reports():
     job_id = request.args.get('job_id')
@@ -660,7 +1031,10 @@ def view_backup_log(history_id):
     log_content = log_path.read_text(encoding='utf-8', errors='replace')
     return render_template('backup_log.html', record=record, log_content=log_content)
 
-# Scheduler Management Routes
+# ============================================
+# SCHEDULER MANAGEMENT ROUTES
+# ============================================
+
 @app.route('/scheduler/status')
 def scheduler_status():
     from scheduler import get_scheduler_status
@@ -685,7 +1059,10 @@ def resume_scheduler():
     resume_sched()
     return jsonify({'success': True, 'message': 'Scheduler resumed'})
 
-# Debug Routes
+# ============================================
+# DEBUG ROUTES
+# ============================================
+
 @app.route('/debug/scheduler')
 def debug_scheduler():
     from scheduler import get_scheduler_status, get_scheduled_jobs
@@ -710,7 +1087,8 @@ def debug_scheduler():
                         fallback_retention=job.retention_policy,
                     )
                 ),
-                'is_active': job.is_active
+                'is_active': job.is_active,
+                'databases': json.loads(job.databases) if job.databases else []
             }
             for job in db_jobs
         ]
@@ -804,7 +1182,8 @@ def debug_scheduler_status():
                         fallback_retention=job.retention_policy,
                     )
                 ),
-                'is_active': job.is_active
+                'is_active': job.is_active,
+                'databases': json.loads(job.databases) if job.databases else []
             }
             for job in db_jobs
         ],
@@ -918,7 +1297,10 @@ def scheduler_ping():
     
     return jsonify(scheduler_info)
 
-# Error Handlers
+# ============================================
+# ERROR HANDLERS
+# ============================================
+
 @app.errorhandler(404)
 def not_found_error(error):
     return render_template('404.html'), 404
@@ -928,7 +1310,10 @@ def internal_error(error):
     db.session.rollback()
     return render_template('500.html'), 500
 
-# Cleanup on app shutdown
+# ============================================
+# CLEANUP ON SHUTDOWN
+# ============================================
+
 import atexit
 
 @atexit.register

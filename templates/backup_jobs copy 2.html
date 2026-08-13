@@ -77,24 +77,11 @@
                                             {{ job.latest_history.status }}
                                         </span>
                                         {% endif %}
-                                        <!-- Show "All Databases" badge -->
-                                        {% set job_databases = job.databases|from_json %}
-                                        {% if job_databases and ('all' in job_databases or '__all__' in job_databases) %}
-                                        <span class="badge bg-info status-badge">
-                                            <i class="bi bi-database-fill"></i> All DBs
-                                        </span>
-                                        {% endif %}
                                     </div>
                                     <div class="job-meta small text-muted">
                                         <span><i class="bi bi-server"></i> {{ job.database_server.name }}</span>
                                         <span class="mx-2">|</span>
                                         <span><i class="bi bi-hdd"></i> {{ job.storage_location.name }}</span>
-                                        <span class="mx-2">|</span>
-                                        {% if job_databases and ('all' in job_databases or '__all__' in job_databases) %}
-                                        <span><i class="bi bi-database-fill text-success"></i> All Databases (Auto-detect)</span>
-                                        {% else %}
-                                        <span><i class="bi bi-database"></i> {{ job_databases|length if job_databases else 0 }} databases</span>
-                                        {% endif %}
                                         <span class="mx-2">|</span>
                                         <span><i class="bi bi-clock"></i> 
                                             {% if job.latest_history %}
@@ -170,17 +157,6 @@
                                     </small>
                                 </div>
                                 {% endif %}
-                                <!-- Show databases in expanded view -->
-                                <div class="mt-2">
-                                    <small class="text-muted">
-                                        <i class="bi bi-database"></i> 
-                                        {% if job_databases and ('all' in job_databases or '__all__' in job_databases) %}
-                                        <span class="text-success fw-bold">All Databases (Auto-detect new databases)</span>
-                                        {% else %}
-                                        Databases: {{ job_databases|join(', ') if job_databases else 'None' }}
-                                        {% endif %}
-                                    </small>
-                                </div>
                             </div>
 
                             <!-- Last Backup Details -->
@@ -308,42 +284,21 @@
                             {% endfor %}
                         </select>
                     </div>
-                    
-                    <!-- Databases Section with "All Databases" Option -->
                     <div class="mb-3">
                         <label class="form-label">Databases</label>
                         <div id="database-list" class="border p-2 rounded" style="max-height: 200px; overflow-y: auto;">
                             {% if form_data and form_data.databases %}
                                 {% for db in form_data.databases %}
-                                    {% if db != '__all__' %}
-                                    <div class="form-check">
-                                        <input class="form-check-input database-checkbox" type="checkbox" name="databases" value="{{ db }}" id="db-{{ db }}" checked>
-                                        <label class="form-check-label" for="db-{{ db }}">{{ db }}</label>
-                                    </div>
-                                    {% endif %}
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="databases" value="{{ db }}" id="db-{{ db }}" checked>
+                                    <label class="form-check-label" for="db-{{ db }}">{{ db }}</label>
+                                </div>
                                 {% endfor %}
                             {% else %}
                             <p class="text-center text-muted mb-0">Select a database server first</p>
                             {% endif %}
                         </div>
-                        
-                        <!-- "All Databases" Option -->
-                        <div class="mt-2 pt-2 border-top">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="select-all-databases" 
-                                       name="databases" value="__all__"
-                                       {% if form_data and form_data.databases and '__all__' in form_data.databases %}checked{% endif %}>
-                                <label class="form-check-label fw-bold text-primary" for="select-all-databases">
-                                    <i class="bi bi-database-fill"></i> All Databases 
-                                    <span class="text-muted small">(Auto-detect new databases)</span>
-                                </label>
-                                <small class="form-text d-block text-muted">
-                                    When selected, all existing and future databases on this server will be automatically backed up.
-                                </small>
-                            </div>
-                        </div>
                     </div>
-                    
                     <div class="mb-3">
                         <label class="form-label">Storage Location</label>
                         <select class="form-select" name="storage_location" required>
@@ -559,7 +514,9 @@
 {% if error %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Wait a moment for the page to load
     setTimeout(function() {
+        // Show the modal
         var modal = document.getElementById('addJobModal');
         if (modal) {
             modal.classList.add('show');
@@ -567,6 +524,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.body.style.overflow = 'hidden';
         }
         
+        // Highlight the name field if it has an error
         const nameInput = document.querySelector('#addJobModal input[name="name"]');
         if (nameInput && nameInput.classList.contains('is-invalid')) {
             nameInput.focus();
@@ -595,6 +553,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 details.classList.remove('show');
                 icon.className = 'bi bi-chevron-down';
             } else {
+                // Close all other expanded details
                 document.querySelectorAll('.job-details.show').forEach(function(el) {
                     el.classList.remove('show');
                     const btn = el.closest('.job-item').querySelector('.toggle-expand i');
@@ -694,10 +653,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
         let html = '';
         
+        // Previous
         html += `<li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
             <a class="page-link" href="#" data-page="${currentPage - 1}" tabindex="-1">Previous</a>
         </li>`;
         
+        // Page numbers
         for (let i = 1; i <= totalPages; i++) {
             if (i === 1 || i === totalPages || Math.abs(i - currentPage) <= 2) {
                 html += `<li class="page-item ${i === currentPage ? 'active' : ''}">
@@ -708,12 +669,14 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         
+        // Next
         html += `<li class="page-item ${currentPage >= totalPages ? 'disabled' : ''}">
             <a class="page-link" href="#" data-page="${currentPage + 1}">Next</a>
         </li>`;
         
         controls.innerHTML = html;
 
+        // Add click handlers
         controls.querySelectorAll('.page-link[data-page]').forEach(function(link) {
             link.addEventListener('click', function(e) {
                 e.preventDefault();
@@ -730,6 +693,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Search/Filter event listeners
     if (searchInput) searchInput.addEventListener('input', filterJobs);
     if (statusFilter) statusFilter.addEventListener('change', filterJobs);
     if (perPageSelect) {
@@ -740,6 +704,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Initial filter
     setTimeout(filterJobs, 100);
 
     // ============================================
@@ -747,10 +712,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // ============================================
     const serverSelect = document.getElementById('database_server');
     const databaseList = document.getElementById('database-list');
-    const selectAllDatabases = document.getElementById('select-all-databases');
-    let selectAllState = false;
-    let allDatabases = [];
-    let previousDatabases = [];
 
     function loadDatabases(serverId) {
         if (!serverId || !databaseList) {
@@ -770,84 +731,35 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                const newDatabases = data.databases.filter(db => !previousDatabases.includes(db));
-                if (newDatabases.length > 0 && selectAllState) {
-                    console.log(`🆕 New databases detected: ${newDatabases.join(', ')} - Will be auto-selected`);
-                }
-                
-                previousDatabases = data.databases;
-                allDatabases = data.databases;
                 databaseList.innerHTML = '';
-                
-                const header = document.createElement('div');
-                header.className = 'd-flex justify-content-between align-items-center mb-2';
-                
-                let newDbNotice = '';
-                if (newDatabases.length > 0) {
-                    newDbNotice = `<span class="badge bg-success ms-2">${newDatabases.length} new</span>`;
-                }
-                
-                header.innerHTML = `
-                    <span class="text-muted small">${data.databases.length} databases found ${newDbNotice}</span>
-                    <span id="selectedCount" class="badge bg-primary">0 selected</span>
-                `;
-                databaseList.appendChild(header);
-                
                 data.databases.forEach((db) => {
                     const checkbox = document.createElement('div');
                     checkbox.className = 'form-check';
-                    const isNew = newDatabases.includes(db);
-                    const isChecked = selectAllState || isNew || (selectAllDatabases && selectAllDatabases.checked);
                     checkbox.innerHTML = `
-                        <input class="form-check-input database-checkbox" type="checkbox" name="databases" value="${db}" id="db-${db}" ${isChecked ? 'checked' : ''}>
-                        <label class="form-check-label" for="db-${db}">
-                            ${db}
-                            ${isNew ? '<span class="badge bg-success ms-1">NEW</span>' : ''}
-                        </label>
+                        <input class="form-check-input" type="checkbox" name="databases" value="${db}" id="db-${db}">
+                        <label class="form-check-label" for="db-${db}">${db}</label>
                     `;
                     databaseList.appendChild(checkbox);
                 });
 
-                if (selectAllDatabases) {
-                    const checkboxes = databaseList.querySelectorAll('.database-checkbox');
-                    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-                    if (allChecked && checkboxes.length > 0) {
-                        selectAllDatabases.checked = true;
-                        selectAllState = true;
-                    }
-                }
+                const selectAll = document.createElement('div');
+                selectAll.className = 'form-check mt-2';
+                selectAll.innerHTML = `
+                    <input class="form-check-input" type="checkbox" id="select-all">
+                    <label class="form-check-label fw-bold" for="select-all">Select All</label>
+                `;
+                databaseList.appendChild(selectAll);
                 
-                updateSelectedCount();
-                
-                document.querySelectorAll('.database-checkbox').forEach((checkbox) => {
-                    checkbox.addEventListener('change', function() {
-                        updateSelectedCount();
-                        const allCheckboxes = databaseList.querySelectorAll('.database-checkbox');
-                        const allChecked = Array.from(allCheckboxes).every(cb => cb.checked);
-                        if (selectAllDatabases) {
-                            selectAllDatabases.checked = allChecked && allCheckboxes.length > 0;
-                            selectAllState = selectAllDatabases.checked;
-                        }
+                document.getElementById('select-all').addEventListener('click', function() {
+                    const checkboxes = databaseList.querySelectorAll('input[type="checkbox"][name="databases"]');
+                    checkboxes.forEach((checkbox) => {
+                        checkbox.checked = this.checked;
                     });
                 });
-                
-                if (newDatabases.length > 0 && selectAllState) {
-                    console.log(`✅ New databases auto-selected: ${newDatabases.join(', ')}`);
-                }
             })
             .catch(error => {
                 databaseList.innerHTML = `<div class="alert alert-danger mb-0">Error loading databases</div>`;
             });
-    }
-
-    function updateSelectedCount() {
-        const checkboxes = document.querySelectorAll('.database-checkbox');
-        const checked = document.querySelectorAll('.database-checkbox:checked');
-        const countEl = document.getElementById('selectedCount');
-        if (countEl) {
-            countEl.textContent = `${checked.length} selected`;
-            countEl.className = `badge ${checked.length > 0 ? 'bg-success' : 'bg-secondary'}`;
-        }
     }
 
     if (serverSelect) {
@@ -860,37 +772,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // ============================================
-    // 4. "ALL DATABASES" TOGGLE
-    // ============================================
-    if (selectAllDatabases) {
-        selectAllDatabases.addEventListener('change', function() {
-            selectAllState = this.checked;
-            const checkboxes = document.querySelectorAll('.database-checkbox');
-            checkboxes.forEach((checkbox) => {
-                checkbox.checked = selectAllState;
-                checkbox.disabled = selectAllState;
-            });
-            
-            if (selectAllState) {
-                checkboxes.forEach(cb => {
-                    cb.checked = false;
-                    cb.disabled = true;
-                });
-                console.log('✅ All Databases mode activated - new databases will be auto-detected during backup');
-            } else {
-                checkboxes.forEach(cb => {
-                    cb.disabled = false;
-                });
-                if (serverSelect && serverSelect.value) {
-                    loadDatabases(serverSelect.value);
-                }
-            }
-            updateSelectedCount();
-        });
-    }
-
-    // ============================================
-    // 5. SCHEDULE TOGGLES
+    // 4. SCHEDULE TOGGLES
     // ============================================
     document.querySelectorAll('.schedule-toggle').forEach((toggle) => {
         const scheduleName = toggle.value;
@@ -907,9 +789,10 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // ============================================
-    // 6. JOB ACTIONS (Run, Delete, Toggle)
+    // 5. JOB ACTIONS (Run, Delete, Toggle)
     // ============================================
     
+    // Run Job
     document.querySelectorAll('.run-job').forEach((button) => {
         button.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -942,6 +825,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // Delete Job
     document.querySelectorAll('.delete-job').forEach((button) => {
         button.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -968,6 +852,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // Toggle Job (Enable/Disable)
     document.querySelectorAll('.toggle-job').forEach((button) => {
         button.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -997,7 +882,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // ============================================
-    // 7. SEND TEST EMAIL
+    // 6. SEND TEST EMAIL
     // ============================================
     const testEmailButton = document.getElementById('send-test-email');
     const notificationEmailInput = document.getElementById('notification_email');
@@ -1032,38 +917,6 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         });
     }
-
-    // ============================================
-    // 8. FORM VALIDATION
-    // ============================================
-    const addJobForm = document.querySelector('#addJobModal form');
-    if (addJobForm) {
-        addJobForm.addEventListener('submit', function(e) {
-            const jobNameInput = this.querySelector('input[name="name"]');
-            const jobName = jobNameInput.value.trim();
-            
-            if (!jobName) {
-                alert('Job name is required');
-                e.preventDefault();
-                return false;
-            }
-            
-            const existingJobNames = [];
-            document.querySelectorAll('.job-name').forEach(function(el) {
-                existingJobNames.push(el.textContent.trim().toLowerCase());
-            });
-            
-            const isEdit = window.location.pathname.includes('/edit_job/');
-            if (!isEdit && existingJobNames.includes(jobName.toLowerCase())) {
-                alert(`A backup job with the name "${jobName}" already exists. Please choose a different name.`);
-                e.preventDefault();
-                jobNameInput.focus();
-                jobNameInput.select();
-                return false;
-            }
-        });
-    }
 });
 </script>
-
 {% endblock %}

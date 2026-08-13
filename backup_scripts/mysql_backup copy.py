@@ -6,10 +6,9 @@ from .storage_providers import get_storage_provider
 from .utils import create_job_tmp_directory, cleanup_job_tmp_directory, create_full_folder_path
 from job_schedules import get_enabled_schedule_types, get_schedule_retention, normalize_schedule_config
 
-def postgres_backup(server, databases, location, folder_path, schedule_types, job_id=None):
+def mysql_backup(server, databases, location, folder_path, schedule_types, job_id=None):
     """
-    PostgreSQL backup with job-specific temporary directory
-    Supports auto-detection of all databases when 'all' is in the databases list
+    MySQL backup with job-specific temporary directory
     """
     # Create job-specific tmp directory
     job_tmp_dir = create_job_tmp_directory(job_id)
@@ -17,16 +16,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
     try:
         print(f"Backup targets: {schedule_types}")
         print(f"Job temporary directory: {job_tmp_dir}")
-        
-        # Check if 'all' is selected - auto-detect databases
-        if 'all' in databases or '__all__' in databases:
-            print("🔄 Auto-detecting all databases from PostgreSQL server...")
-            databases = get_all_postgres_databases(server)
-            if not databases:
-                return False, "No databases found on the server", None, 0, []
-            print(f"✅ Auto-detected {len(databases)} databases: {', '.join(databases)}")
-        else:
-            print(f"📊 Using manually selected databases: {', '.join(databases)}")
         
         backup_files = []
         database_results = []
@@ -37,48 +26,37 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
             filename = f"{database}_{timestamp}.sql.gz"
             filepath = os.path.join(job_tmp_dir, filename)
             
-            print(f"Creating backup file: {filepath}")
+            print(f"Creating MySQL backup: {filepath}")
             
-            # Set environment variables for pg_dump
-            env = os.environ.copy()
-            env['PGPASSWORD'] = server.password
-            
-            # Run pg_dump command with plain format piped to gzip
-            pg_dump_cmd = [
-                'pg_dump',
-                '-h', server.host,
-                '-p', str(server.port),
-                '-U', server.username,
-                '-F', 'p',  # Plain format
+            # Run mysqldump command
+            cmd = [
+                'mysqldump',
+                f'-h{server.host}',
+                f'-P{server.port}',
+                f'-u{server.username}',
+                f'-p{server.password}',
+                '--single-transaction',
+                '--routines',
+                '--triggers',
                 database
             ]
             
-            print(f"Running command: {' '.join(pg_dump_cmd)}")
+            print(f"Running command: mysqldump -h{server.host} -P{server.port} -u{server.username} [database: {database}]")
             
-            # Gzip command
-            gzip_cmd = ['gzip', '-c']
-            
+            # Execute dump and compress
             try:
-                # Execute pg_dump and pipe to gzip
-                pg_dump_process = subprocess.Popen(pg_dump_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                with open(filepath, 'w') as f:
+                    dump_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    compress_process = subprocess.Popen(['gzip'], stdin=dump_process.stdout, stdout=f)
+                    compress_process.wait()
                 
-                # Open the output file for writing
-                with open(filepath, 'wb') as outfile:
-                    gzip_process = subprocess.Popen(gzip_cmd, stdin=pg_dump_process.stdout, stdout=outfile)
-                
-                # Wait for processes to complete
-                pg_dump_process.stdout.close()
-                gzip_process.communicate()
-                
-                # Check if pg_dump was successful
-                pg_dump_exit_code = pg_dump_process.wait()
-                
-                if pg_dump_exit_code == 0:
+                # Check if the process was successful
+                if compress_process.returncode == 0:
                     # Verify file was created
                     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
                         backup_files.append((filepath, filename))
                         file_size = os.path.getsize(filepath)
-                        print(f"✓ Created PostgreSQL backup: {filepath} ({file_size} bytes)")
+                        print(f"✓ Created MySQL backup: {filepath} ({file_size} bytes)")
                         database_results.append({
                             'database': database,
                             'status': 'success',
@@ -93,13 +71,13 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                             'file_size': 0,
                         })
                 else:
-                    # Get error message from pg_dump
-                    _, stderr = pg_dump_process.communicate()
+                    # Get error message
+                    _, stderr = dump_process.communicate()
                     error_msg = stderr.decode() if stderr else "Unknown error"
                     database_results.append({
                         'database': database,
                         'status': 'failed',
-                        'message': f"PostgreSQL backup failed for database {database}: {error_msg}",
+                        'message': f"MySQL backup failed for database {database}: {error_msg}",
                         'file_size': 0,
                     })
                     
@@ -107,14 +85,14 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                 database_results.append({
                     'database': database,
                     'status': 'failed',
-                    'message': f"Error during backup process for database {database}: {str(e)}",
+                    'message': f"Error during MySQL backup process for database {database}: {str(e)}",
                     'file_size': 0,
                 })
 
         if backup_files:
             result = upload_backups_for_schedules(location, folder_path, schedule_types, backup_files)
         else:
-            result = (False, "No backup files were created", None, 0)
+            result = (False, "No MySQL backup files were created", None, 0)
         
         # Clean up only this job's temporary directory
         cleanup_job_tmp_directory(job_tmp_dir)
@@ -133,34 +111,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         cleanup_job_tmp_directory(job_tmp_dir)
         return False, str(e), None, 0, []
 
-
-def get_all_postgres_databases(server):
-    """
-    Connect to PostgreSQL server and get all databases excluding system databases
-    """
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=server.host,
-            port=server.port,
-            user=server.username,
-            password=server.password,
-            database='postgres'
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres'")
-        
-        databases = [row[0] for row in cursor.fetchall()]
-        
-        cursor.close()
-        conn.close()
-        
-        return databases
-    except Exception as e:
-        print(f"⚠️ Error detecting databases from PostgreSQL server: {e}")
-        return []
-
-
 def upload_to_storage(location, folder_path, backup_files):
     """Upload backup files using the appropriate storage provider"""
     config = json.loads(location.config)
@@ -175,7 +125,6 @@ def upload_to_storage(location, folder_path, backup_files):
         return storage_provider.upload_files(config, folder_path, backup_files)
     except Exception as e:
         return False, str(e), None, 0
-
 
 def upload_backups_for_schedules(location, base_folder_path, schedule_types, backup_files):
     uploaded_paths = []
@@ -195,12 +144,10 @@ def upload_backups_for_schedules(location, base_folder_path, schedule_types, bac
 
     return True, "Backup completed successfully", ";".join(uploaded_paths), total_size
 
-
 def build_partial_failure_message(database_results):
     succeeded = len([item for item in database_results if item['status'] == 'success'])
     failed = len(database_results) - succeeded
     return f"Backup completed with partial failures. {succeeded} succeeded, {failed} failed."
-
 
 def apply_retention_policy(location, base_folder_path, schedule_type):
     """
@@ -259,29 +206,13 @@ def apply_retention_policy(location, base_folder_path, schedule_type):
                 # Get databases for this job
                 databases = json.loads(job.databases)
                 
-                # Handle 'all' databases - we need to get actual database names
-                if 'all' in databases or '__all__' in databases:
-                    # For retention policy with auto-detected databases, we need to get the actual list
-                    try:
-                        # Get the server from the job
-                        server = job.database_server
-                        if server.type.value == 'postgres':
-                            actual_databases = get_all_postgres_databases(server)
-                            if actual_databases:
-                                databases = actual_databases
-                    except Exception as e:
-                        print(f"⚠️ Could not auto-detect databases for retention: {e}")
-                        continue
-                
                 # Delete old files for each database from the schedule-specific folder
                 for database in databases:
                     deleted_count = delete_old_backup_files(location, full_folder_path, database, cutoff_date)
-                    if deleted_count > 0:
-                        print(f"Deleted {deleted_count} old backup files for database: {database}")
+                    print(f"Deleted {deleted_count} old backup files for database: {database}")
                 
     except Exception as e:
         print(f"Error applying retention policy: {e}")
-
 
 def delete_old_backup_files(location, folder_path, database, cutoff_date):
     """Delete old backup files using the appropriate storage provider"""

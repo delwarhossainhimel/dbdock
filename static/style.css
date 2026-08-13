@@ -30,9 +30,6 @@ body {
     background:
         radial-gradient(circle at top left, rgba(19, 103, 209, 0.07), transparent 24%),
         linear-gradient(180deg, #f7faff 0%, var(--bg) 100%);
-}
-
-body {
     min-height: 100vh;
     letter-spacing: 0.01em;
     display: flex;
@@ -47,6 +44,7 @@ a {
     max-width: 1180px;
 }
 
+/* Cards */
 .card {
     border: 1px solid rgba(201, 213, 229, 0.85);
     border-radius: var(--radius-lg);
@@ -76,6 +74,7 @@ button {
     font-size: 0.96rem;
 }
 
+/* Forms */
 .form-control,
 .form-select {
     border-color: var(--line-strong);
@@ -92,6 +91,7 @@ button {
     box-shadow: 0 0 0 4px rgba(19, 103, 209, 0.12);
 }
 
+/* Buttons */
 .btn {
     border-radius: 999px;
     font-weight: 600;
@@ -136,6 +136,7 @@ button {
     border-color: rgba(196, 64, 80, 0.24);
 }
 
+/* Status Badges */
 .status-badge {
     display: inline-flex;
     align-items: center;
@@ -167,6 +168,7 @@ button {
     color: #5b697d;
 }
 
+/* Backup Job Cards */
 .backup-job-card .card-body {
     padding: 1.05rem 1.1rem;
 }
@@ -311,6 +313,7 @@ button {
     border-style: dashed;
 }
 
+/* Navigation */
 .app-navbar {
     background: linear-gradient(180deg, #202834 0%, var(--nav-bg) 100%);
     border-bottom: 1px solid var(--nav-line);
@@ -382,6 +385,7 @@ button {
     background: rgba(196, 64, 80, 0.15);
 }
 
+/* Main Content */
 .app-main {
     flex: 1;
     padding: 2rem 0 3rem;
@@ -410,39 +414,6 @@ button {
     padding: 0 0 1.5rem;
 }
 
-@media (max-width: 991.98px) {
-    .backup-job-layout {
-        flex-direction: column;
-    }
-
-    .backup-job-actions {
-        width: 100%;
-        min-width: 0;
-    }
-
-    .backup-job-actions .btn {
-        width: 100%;
-    }
-
-    .backup-job-history-top {
-        flex-direction: column;
-    }
-}
-
-@media (max-width: 575.98px) {
-    .backup-job-meta {
-        flex-direction: column;
-    }
-
-    .backup-job-meta-item {
-        min-width: 0;
-    }
-
-    .backup-job-history-details {
-        grid-template-columns: 1fr;
-    }
-}
-
 .app-footer-auth {
     padding-top: 0.25rem;
 }
@@ -460,6 +431,7 @@ button {
     text-align: center;
 }
 
+/* Login */
 .login-shell {
     width: 100%;
 }
@@ -581,6 +553,7 @@ button {
     margin-bottom: 1rem;
 }
 
+/* Dashboard */
 .dashboard-hero {
     margin-bottom: 1.75rem;
     padding: 1.75rem 2rem;
@@ -672,16 +645,19 @@ button {
     vertical-align: middle;
 }
 
+/* Alerts */
 .alert {
     border-radius: 14px;
     box-shadow: 0 10px 26px rgba(23, 43, 77, 0.08);
 }
 
+/* Tables */
 .table th,
 .table td {
     border-color: var(--line);
 }
 
+/* Form Sections */
 .form-section {
     background-color: white;
     padding: 1.5rem;
@@ -690,6 +666,7 @@ button {
     box-shadow: var(--shadow-card);
 }
 
+/* Reports */
 .reports-pagination {
     display: flex;
     align-items: center;
@@ -712,6 +689,7 @@ button {
     gap: 0.75rem;
 }
 
+/* Backup Log */
 .backup-log-view {
     margin: 0;
     padding: 1rem 1.1rem;
@@ -728,6 +706,7 @@ button {
     overflow: auto;
 }
 
+/* Responsive */
 @media (min-width: 768px) {
     .app-navbar-inner {
         gap: 0.85rem;
@@ -804,4 +783,109 @@ button {
     .login-card-body {
         padding: 1.35rem;
     }
+}
+
+@media (max-width: 991.98px) {
+    .backup-job-layout {
+        flex-direction: column;
+    }
+
+    .backup-job-actions {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .backup-job-actions .btn {
+        width: 100%;
+    }
+
+    .backup-job-history-top {
+        flex-direction: column;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .backup-job-meta {
+        flex-direction: column;
+    }
+
+    .backup-job-meta-item {
+        min-width: 0;
+    }
+
+    .backup-job-history-details {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Compact Job List Styles */
+.job-item {
+    margin-bottom: 0.5rem;
+}
+
+.job-card {
+    transition: all 0.2s ease;
+    border-left: 4px solid transparent;
+}
+
+.job-card:hover {
+    background-color: #f8f9fa;
+    border-left-color: #0d6efd;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.status-active {
+    background-color: #28a745;
+}
+
+.status-inactive {
+    background-color: #6c757d;
+}
+
+.job-meta span {
+    font-size: 0.8rem;
+}
+
+.job-details {
+    margin-top: -0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.job-details .card {
+    border-top: none;
+    border-radius: 0 0 0.25rem 0.25rem;
+}
+
+.status-badge {
+    font-size: 0.7rem;
+    padding: 0.2rem 0.5rem;
+}
+
+.btn-group .btn {
+    padding: 0.15rem 0.4rem;
+    font-size: 0.8rem;
+}
+
+.backup-details {
+    font-size: 0.9rem;
+}
+
+.backup-details .text-muted {
+    font-size: 0.85rem;
+}
+
+.pagination {
+    margin-bottom: 0;
+}
+
+.pagination .page-link {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.9rem;
 }

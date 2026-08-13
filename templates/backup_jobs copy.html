@@ -1,19 +1,6 @@
 {% extends "base.html" %}
 
 {% block content %}
-<!-- Flash Messages -->
-{% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-        {% for category, message in messages %}
-            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                <i class="bi bi-{% if category == 'success' %}check-circle{% elif category == 'danger' %}exclamation-circle{% else %}info-circle{% endif %}"></i>
-                {{ message }}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-        {% endfor %}
-    {% endif %}
-{% endwith %}
-
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2>Backup Jobs</h2>
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addJobModal">
@@ -77,24 +64,11 @@
                                             {{ job.latest_history.status }}
                                         </span>
                                         {% endif %}
-                                        <!-- Show "All Databases" badge -->
-                                        {% set job_databases = job.databases|from_json %}
-                                        {% if job_databases and ('all' in job_databases or '__all__' in job_databases) %}
-                                        <span class="badge bg-info status-badge">
-                                            <i class="bi bi-database-fill"></i> All DBs
-                                        </span>
-                                        {% endif %}
                                     </div>
                                     <div class="job-meta small text-muted">
                                         <span><i class="bi bi-server"></i> {{ job.database_server.name }}</span>
                                         <span class="mx-2">|</span>
                                         <span><i class="bi bi-hdd"></i> {{ job.storage_location.name }}</span>
-                                        <span class="mx-2">|</span>
-                                        {% if job_databases and ('all' in job_databases or '__all__' in job_databases) %}
-                                        <span><i class="bi bi-database-fill text-success"></i> All Databases (Auto-detect)</span>
-                                        {% else %}
-                                        <span><i class="bi bi-database"></i> {{ job_databases|length if job_databases else 0 }} databases</span>
-                                        {% endif %}
                                         <span class="mx-2">|</span>
                                         <span><i class="bi bi-clock"></i> 
                                             {% if job.latest_history %}
@@ -170,17 +144,6 @@
                                     </small>
                                 </div>
                                 {% endif %}
-                                <!-- Show databases in expanded view -->
-                                <div class="mt-2">
-                                    <small class="text-muted">
-                                        <i class="bi bi-database"></i> 
-                                        {% if job_databases and ('all' in job_databases or '__all__' in job_databases) %}
-                                        <span class="text-success fw-bold">All Databases (Auto-detect new databases)</span>
-                                        {% else %}
-                                        Databases: {{ job_databases|join(', ') if job_databases else 'None' }}
-                                        {% endif %}
-                                    </small>
-                                </div>
                             </div>
 
                             <!-- Last Backup Details -->
@@ -273,7 +236,7 @@
 </div>
 
 <!-- Add Job Modal -->
-<div class="modal fade" id="addJobModal" tabindex="-1" aria-hidden="true" {% if error %}style="display:block;"{% endif %}>
+<div class="modal fade" id="addJobModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
@@ -284,180 +247,106 @@
                 <div class="modal-body">
                     <div class="mb-3">
                         <label class="form-label">Name</label>
-                        <input type="text" class="form-control {% if error and form_data and form_data.name %}is-invalid{% endif %}" 
-                               name="name" required 
-                               value="{{ form_data.name if form_data else '' }}">
-                        {% if error and form_data and form_data.name %}
-                        <div class="invalid-feedback">
-                            A backup job with the name "{{ form_data.name }}" already exists.
-                        </div>
-                        {% endif %}
+                        <input type="text" class="form-control" name="name" required>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Description</label>
-                        <textarea class="form-control" name="description" rows="2">{{ form_data.description if form_data else '' }}</textarea>
+                        <textarea class="form-control" name="description" rows="2"></textarea>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Database Server</label>
                         <select class="form-select" name="database_server" id="database_server" required>
                             <option value="">Select a server</option>
                             {% for server in servers %}
-                            <option value="{{ server.id }}" {% if form_data and form_data.database_server_id|int == server.id %}selected{% endif %}>
-                                {{ server.name }} ({{ server.type.value }})
-                            </option>
+                            <option value="{{ server.id }}">{{ server.name }} ({{ server.type.value }})</option>
                             {% endfor %}
                         </select>
                     </div>
-                    
-                    <!-- Databases Section with "All Databases" Option -->
                     <div class="mb-3">
                         <label class="form-label">Databases</label>
                         <div id="database-list" class="border p-2 rounded" style="max-height: 200px; overflow-y: auto;">
-                            {% if form_data and form_data.databases %}
-                                {% for db in form_data.databases %}
-                                    {% if db != '__all__' %}
-                                    <div class="form-check">
-                                        <input class="form-check-input database-checkbox" type="checkbox" name="databases" value="{{ db }}" id="db-{{ db }}" checked>
-                                        <label class="form-check-label" for="db-{{ db }}">{{ db }}</label>
-                                    </div>
-                                    {% endif %}
-                                {% endfor %}
-                            {% else %}
                             <p class="text-center text-muted mb-0">Select a database server first</p>
-                            {% endif %}
-                        </div>
-                        
-                        <!-- "All Databases" Option -->
-                        <div class="mt-2 pt-2 border-top">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="select-all-databases" 
-                                       name="databases" value="__all__"
-                                       {% if form_data and form_data.databases and '__all__' in form_data.databases %}checked{% endif %}>
-                                <label class="form-check-label fw-bold text-primary" for="select-all-databases">
-                                    <i class="bi bi-database-fill"></i> All Databases 
-                                    <span class="text-muted small">(Auto-detect new databases)</span>
-                                </label>
-                                <small class="form-text d-block text-muted">
-                                    When selected, all existing and future databases on this server will be automatically backed up.
-                                </small>
-                            </div>
                         </div>
                     </div>
-                    
                     <div class="mb-3">
                         <label class="form-label">Storage Location</label>
                         <select class="form-select" name="storage_location" required>
                             <option value="">Select a storage location</option>
                             {% for location in locations %}
-                            <option value="{{ location.id }}" {% if form_data and form_data.storage_location_id|int == location.id %}selected{% endif %}>
-                                {{ location.name }} ({{ location.type.value }})
-                            </option>
+                            <option value="{{ location.id }}">{{ location.name }} ({{ location.type.value }})</option>
                             {% endfor %}
                         </select>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Folder Path</label>
-                        <input type="text" class="form-control" name="folder_path" 
-                               placeholder="/backups/database" required
-                               value="{{ form_data.folder_path if form_data else '' }}">
+                        <input type="text" class="form-control" name="folder_path" placeholder="/backups/database" required>
                     </div>
 
                     <div class="mb-3">
                         <label class="form-label">Schedules</label>
                         <div class="border rounded p-3">
-                            <!-- Daily -->
                             <div class="form-check mb-3">
-                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="daily" 
-                                       id="schedule-daily" {% if form_data and 'daily' in form_data.schedule_types %}checked{% endif %}>
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="daily" id="schedule-daily">
                                 <label class="form-check-label fw-semibold" for="schedule-daily">Daily</label>
                             </div>
-                            <div class="schedule-option ps-4 pb-3" data-schedule="daily" 
-                                 style="display: {% if form_data and 'daily' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                            <div class="schedule-option ps-4 pb-3" data-schedule="daily" style="display: none;">
                                 <label class="form-label">Daily Time</label>
-                                <input type="time" class="form-control" name="daily_time" 
-                                       value="{{ form_data.daily_time if form_data else '00:00' }}">
+                                <input type="time" class="form-control" name="daily_time" value="00:00">
                                 <label class="form-label mt-3">Daily Retention</label>
-                                <input type="number" class="form-control" name="daily_retention" 
-                                       min="1" value="{{ form_data.daily_retention if form_data else '1' }}">
+                                <input type="number" class="form-control" name="daily_retention" min="1" value="1">
                             </div>
 
-                            <!-- Weekly -->
                             <div class="form-check mb-3">
-                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="weekly" 
-                                       id="schedule-weekly" {% if form_data and 'weekly' in form_data.schedule_types %}checked{% endif %}>
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="weekly" id="schedule-weekly">
                                 <label class="form-check-label fw-semibold" for="schedule-weekly">Weekly</label>
                             </div>
-                            <div class="schedule-option ps-4 pb-3" data-schedule="weekly" 
-                                 style="display: {% if form_data and 'weekly' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                            <div class="schedule-option ps-4 pb-3" data-schedule="weekly" style="display: none;">
                                 <label class="form-label">Day of Week</label>
                                 <select class="form-select mb-3" name="weekly_day">
-                                    <option value="0" {% if form_data and form_data.weekly_day == '0' %}selected{% endif %}>Sunday</option>
-                                    <option value="1" {% if form_data and form_data.weekly_day == '1' %}selected{% endif %}>Monday</option>
-                                    <option value="2" {% if form_data and form_data.weekly_day == '2' %}selected{% endif %}>Tuesday</option>
-                                    <option value="3" {% if form_data and form_data.weekly_day == '3' %}selected{% endif %}>Wednesday</option>
-                                    <option value="4" {% if form_data and form_data.weekly_day == '4' %}selected{% endif %}>Thursday</option>
-                                    <option value="5" {% if form_data and form_data.weekly_day == '5' %}selected{% endif %}>Friday</option>
-                                    <option value="6" {% if form_data and form_data.weekly_day == '6' %}selected{% endif %}>Saturday</option>
+                                    <option value="0">Sunday</option>
+                                    <option value="1">Monday</option>
+                                    <option value="2">Tuesday</option>
+                                    <option value="3">Wednesday</option>
+                                    <option value="4">Thursday</option>
+                                    <option value="5">Friday</option>
+                                    <option value="6">Saturday</option>
                                 </select>
                                 <label class="form-label">Weekly Time</label>
-                                <input type="time" class="form-control" name="weekly_time" 
-                                       value="{{ form_data.weekly_time if form_data else '00:00' }}">
+                                <input type="time" class="form-control" name="weekly_time" value="00:00">
                                 <label class="form-label mt-3">Weekly Retention</label>
-                                <input type="number" class="form-control" name="weekly_retention" 
-                                       min="1" value="{{ form_data.weekly_retention if form_data else '1' }}">
+                                <input type="number" class="form-control" name="weekly_retention" min="1" value="1">
                             </div>
 
-                            <!-- Monthly -->
                             <div class="form-check mb-3">
-                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="monthly" 
-                                       id="schedule-monthly" {% if form_data and 'monthly' in form_data.schedule_types %}checked{% endif %}>
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="monthly" id="schedule-monthly">
                                 <label class="form-check-label fw-semibold" for="schedule-monthly">Monthly</label>
                             </div>
-                            <div class="schedule-option ps-4 pb-3" data-schedule="monthly" 
-                                 style="display: {% if form_data and 'monthly' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                            <div class="schedule-option ps-4 pb-3" data-schedule="monthly" style="display: none;">
                                 <label class="form-label">Day of Month</label>
-                                <input type="number" class="form-control mb-3" name="monthly_day" 
-                                       min="1" max="31" value="{{ form_data.monthly_day if form_data else '1' }}">
+                                <input type="number" class="form-control mb-3" name="monthly_day" min="1" max="31" value="1">
                                 <label class="form-label">Monthly Time</label>
-                                <input type="time" class="form-control" name="monthly_time" 
-                                       value="{{ form_data.monthly_time if form_data else '00:00' }}">
+                                <input type="time" class="form-control" name="monthly_time" value="00:00">
                                 <label class="form-label mt-3">Monthly Retention</label>
-                                <input type="number" class="form-control" name="monthly_retention" 
-                                       min="1" value="{{ form_data.monthly_retention if form_data else '1' }}">
+                                <input type="number" class="form-control" name="monthly_retention" min="1" value="1">
                             </div>
 
-                            <!-- Yearly -->
                             <div class="form-check mb-3">
-                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="yearly" 
-                                       id="schedule-yearly" {% if form_data and 'yearly' in form_data.schedule_types %}checked{% endif %}>
+                                <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="yearly" id="schedule-yearly">
                                 <label class="form-check-label fw-semibold" for="schedule-yearly">Yearly</label>
                             </div>
-                            <div class="schedule-option ps-4" data-schedule="yearly" 
-                                 style="display: {% if form_data and 'yearly' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                            <div class="schedule-option ps-4" data-schedule="yearly" style="display: none;">
                                 <label class="form-label">Month</label>
                                 <select class="form-select mb-3" name="yearly_month">
-                                    <option value="1" {% if form_data and form_data.yearly_month == '1' %}selected{% endif %}>January</option>
-                                    <option value="2" {% if form_data and form_data.yearly_month == '2' %}selected{% endif %}>February</option>
-                                    <option value="3" {% if form_data and form_data.yearly_month == '3' %}selected{% endif %}>March</option>
-                                    <option value="4" {% if form_data and form_data.yearly_month == '4' %}selected{% endif %}>April</option>
-                                    <option value="5" {% if form_data and form_data.yearly_month == '5' %}selected{% endif %}>May</option>
-                                    <option value="6" {% if form_data and form_data.yearly_month == '6' %}selected{% endif %}>June</option>
-                                    <option value="7" {% if form_data and form_data.yearly_month == '7' %}selected{% endif %}>July</option>
-                                    <option value="8" {% if form_data and form_data.yearly_month == '8' %}selected{% endif %}>August</option>
-                                    <option value="9" {% if form_data and form_data.yearly_month == '9' %}selected{% endif %}>September</option>
-                                    <option value="10" {% if form_data and form_data.yearly_month == '10' %}selected{% endif %}>October</option>
-                                    <option value="11" {% if form_data and form_data.yearly_month == '11' %}selected{% endif %}>November</option>
-                                    <option value="12" {% if form_data and form_data.yearly_month == '12' %}selected{% endif %}>December</option>
+                                    {% for month_number, month_name in [('1', 'January'), ('2', 'February'), ('3', 'March'), ('4', 'April'), ('5', 'May'), ('6', 'June'), ('7', 'July'), ('8', 'August'), ('9', 'September'), ('10', 'October'), ('11', 'November'), ('12', 'December')] %}
+                                    <option value="{{ month_number }}">{{ month_name }}</option>
+                                    {% endfor %}
                                 </select>
                                 <label class="form-label">Day of Month</label>
-                                <input type="number" class="form-control mb-3" name="yearly_day" 
-                                       min="1" max="31" value="{{ form_data.yearly_day if form_data else '1' }}">
+                                <input type="number" class="form-control mb-3" name="yearly_day" min="1" max="31" value="1">
                                 <label class="form-label">Yearly Time</label>
-                                <input type="time" class="form-control" name="yearly_time" 
-                                       value="{{ form_data.yearly_time if form_data else '00:00' }}">
+                                <input type="time" class="form-control" name="yearly_time" value="00:00">
                                 <label class="form-label mt-3">Yearly Retention</label>
-                                <input type="number" class="form-control" name="yearly_retention" 
-                                       min="1" value="{{ form_data.yearly_retention if form_data else '1' }}">
+                                <input type="number" class="form-control" name="yearly_retention" min="1" value="1">
                             </div>
                         </div>
                         <div class="form-text">You can enable one or many schedules in the same job.</div>
@@ -466,8 +355,7 @@
                     <div class="mb-3">
                         <label class="form-label">Notification Email</label>
                         <div class="input-group">
-                            <input type="email" class="form-control" name="notification_email" 
-                                   id="notification_email" value="{{ form_data.notification_email if form_data else '' }}">
+                            <input type="email" class="form-control" name="notification_email" id="notification_email">
                             <button type="button" class="btn btn-outline-primary" id="send-test-email">Send Test</button>
                         </div>
                         <div class="form-text">Uses the SMTP settings from `.env`</div>
@@ -555,28 +443,6 @@
     }
 </style>
 
-<!-- Auto-open modal if there was an error -->
-{% if error %}
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    setTimeout(function() {
-        var modal = document.getElementById('addJobModal');
-        if (modal) {
-            modal.classList.add('show');
-            modal.style.display = 'block';
-            document.body.style.overflow = 'hidden';
-        }
-        
-        const nameInput = document.querySelector('#addJobModal input[name="name"]');
-        if (nameInput && nameInput.classList.contains('is-invalid')) {
-            nameInput.focus();
-            nameInput.select();
-        }
-    }, 500);
-});
-</script>
-{% endif %}
-
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // ============================================
@@ -595,6 +461,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 details.classList.remove('show');
                 icon.className = 'bi bi-chevron-down';
             } else {
+                // Close all other expanded details
                 document.querySelectorAll('.job-details.show').forEach(function(el) {
                     el.classList.remove('show');
                     const btn = el.closest('.job-item').querySelector('.toggle-expand i');
@@ -694,10 +561,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
         let html = '';
         
+        // Previous
         html += `<li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
             <a class="page-link" href="#" data-page="${currentPage - 1}" tabindex="-1">Previous</a>
         </li>`;
         
+        // Page numbers
         for (let i = 1; i <= totalPages; i++) {
             if (i === 1 || i === totalPages || Math.abs(i - currentPage) <= 2) {
                 html += `<li class="page-item ${i === currentPage ? 'active' : ''}">
@@ -708,12 +577,14 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         
+        // Next
         html += `<li class="page-item ${currentPage >= totalPages ? 'disabled' : ''}">
             <a class="page-link" href="#" data-page="${currentPage + 1}">Next</a>
         </li>`;
         
         controls.innerHTML = html;
 
+        // Add click handlers
         controls.querySelectorAll('.page-link[data-page]').forEach(function(link) {
             link.addEventListener('click', function(e) {
                 e.preventDefault();
@@ -730,6 +601,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Search/Filter event listeners
     if (searchInput) searchInput.addEventListener('input', filterJobs);
     if (statusFilter) statusFilter.addEventListener('change', filterJobs);
     if (perPageSelect) {
@@ -740,6 +612,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Initial filter
     setTimeout(filterJobs, 100);
 
     // ============================================
@@ -747,10 +620,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // ============================================
     const serverSelect = document.getElementById('database_server');
     const databaseList = document.getElementById('database-list');
-    const selectAllDatabases = document.getElementById('select-all-databases');
-    let selectAllState = false;
-    let allDatabases = [];
-    let previousDatabases = [];
 
     function loadDatabases(serverId) {
         if (!serverId || !databaseList) {
@@ -770,84 +639,35 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
 
-                const newDatabases = data.databases.filter(db => !previousDatabases.includes(db));
-                if (newDatabases.length > 0 && selectAllState) {
-                    console.log(`🆕 New databases detected: ${newDatabases.join(', ')} - Will be auto-selected`);
-                }
-                
-                previousDatabases = data.databases;
-                allDatabases = data.databases;
                 databaseList.innerHTML = '';
-                
-                const header = document.createElement('div');
-                header.className = 'd-flex justify-content-between align-items-center mb-2';
-                
-                let newDbNotice = '';
-                if (newDatabases.length > 0) {
-                    newDbNotice = `<span class="badge bg-success ms-2">${newDatabases.length} new</span>`;
-                }
-                
-                header.innerHTML = `
-                    <span class="text-muted small">${data.databases.length} databases found ${newDbNotice}</span>
-                    <span id="selectedCount" class="badge bg-primary">0 selected</span>
-                `;
-                databaseList.appendChild(header);
-                
                 data.databases.forEach((db) => {
                     const checkbox = document.createElement('div');
                     checkbox.className = 'form-check';
-                    const isNew = newDatabases.includes(db);
-                    const isChecked = selectAllState || isNew || (selectAllDatabases && selectAllDatabases.checked);
                     checkbox.innerHTML = `
-                        <input class="form-check-input database-checkbox" type="checkbox" name="databases" value="${db}" id="db-${db}" ${isChecked ? 'checked' : ''}>
-                        <label class="form-check-label" for="db-${db}">
-                            ${db}
-                            ${isNew ? '<span class="badge bg-success ms-1">NEW</span>' : ''}
-                        </label>
+                        <input class="form-check-input" type="checkbox" name="databases" value="${db}" id="db-${db}">
+                        <label class="form-check-label" for="db-${db}">${db}</label>
                     `;
                     databaseList.appendChild(checkbox);
                 });
 
-                if (selectAllDatabases) {
-                    const checkboxes = databaseList.querySelectorAll('.database-checkbox');
-                    const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-                    if (allChecked && checkboxes.length > 0) {
-                        selectAllDatabases.checked = true;
-                        selectAllState = true;
-                    }
-                }
+                const selectAll = document.createElement('div');
+                selectAll.className = 'form-check mt-2';
+                selectAll.innerHTML = `
+                    <input class="form-check-input" type="checkbox" id="select-all">
+                    <label class="form-check-label fw-bold" for="select-all">Select All</label>
+                `;
+                databaseList.appendChild(selectAll);
                 
-                updateSelectedCount();
-                
-                document.querySelectorAll('.database-checkbox').forEach((checkbox) => {
-                    checkbox.addEventListener('change', function() {
-                        updateSelectedCount();
-                        const allCheckboxes = databaseList.querySelectorAll('.database-checkbox');
-                        const allChecked = Array.from(allCheckboxes).every(cb => cb.checked);
-                        if (selectAllDatabases) {
-                            selectAllDatabases.checked = allChecked && allCheckboxes.length > 0;
-                            selectAllState = selectAllDatabases.checked;
-                        }
+                document.getElementById('select-all').addEventListener('click', function() {
+                    const checkboxes = databaseList.querySelectorAll('input[type="checkbox"][name="databases"]');
+                    checkboxes.forEach((checkbox) => {
+                        checkbox.checked = this.checked;
                     });
                 });
-                
-                if (newDatabases.length > 0 && selectAllState) {
-                    console.log(`✅ New databases auto-selected: ${newDatabases.join(', ')}`);
-                }
             })
             .catch(error => {
                 databaseList.innerHTML = `<div class="alert alert-danger mb-0">Error loading databases</div>`;
             });
-    }
-
-    function updateSelectedCount() {
-        const checkboxes = document.querySelectorAll('.database-checkbox');
-        const checked = document.querySelectorAll('.database-checkbox:checked');
-        const countEl = document.getElementById('selectedCount');
-        if (countEl) {
-            countEl.textContent = `${checked.length} selected`;
-            countEl.className = `badge ${checked.length > 0 ? 'bg-success' : 'bg-secondary'}`;
-        }
     }
 
     if (serverSelect) {
@@ -860,37 +680,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // ============================================
-    // 4. "ALL DATABASES" TOGGLE
-    // ============================================
-    if (selectAllDatabases) {
-        selectAllDatabases.addEventListener('change', function() {
-            selectAllState = this.checked;
-            const checkboxes = document.querySelectorAll('.database-checkbox');
-            checkboxes.forEach((checkbox) => {
-                checkbox.checked = selectAllState;
-                checkbox.disabled = selectAllState;
-            });
-            
-            if (selectAllState) {
-                checkboxes.forEach(cb => {
-                    cb.checked = false;
-                    cb.disabled = true;
-                });
-                console.log('✅ All Databases mode activated - new databases will be auto-detected during backup');
-            } else {
-                checkboxes.forEach(cb => {
-                    cb.disabled = false;
-                });
-                if (serverSelect && serverSelect.value) {
-                    loadDatabases(serverSelect.value);
-                }
-            }
-            updateSelectedCount();
-        });
-    }
-
-    // ============================================
-    // 5. SCHEDULE TOGGLES
+    // 4. SCHEDULE TOGGLES
     // ============================================
     document.querySelectorAll('.schedule-toggle').forEach((toggle) => {
         const scheduleName = toggle.value;
@@ -907,9 +697,10 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // ============================================
-    // 6. JOB ACTIONS (Run, Delete, Toggle)
+    // 5. JOB ACTIONS (Run, Delete, Toggle)
     // ============================================
     
+    // Run Job
     document.querySelectorAll('.run-job').forEach((button) => {
         button.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -942,6 +733,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // Delete Job
     document.querySelectorAll('.delete-job').forEach((button) => {
         button.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -968,6 +760,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
+    // Toggle Job (Enable/Disable)
     document.querySelectorAll('.toggle-job').forEach((button) => {
         button.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -997,7 +790,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // ============================================
-    // 7. SEND TEST EMAIL
+    // 6. SEND TEST EMAIL
     // ============================================
     const testEmailButton = document.getElementById('send-test-email');
     const notificationEmailInput = document.getElementById('notification_email');
@@ -1032,38 +825,6 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         });
     }
-
-    // ============================================
-    // 8. FORM VALIDATION
-    // ============================================
-    const addJobForm = document.querySelector('#addJobModal form');
-    if (addJobForm) {
-        addJobForm.addEventListener('submit', function(e) {
-            const jobNameInput = this.querySelector('input[name="name"]');
-            const jobName = jobNameInput.value.trim();
-            
-            if (!jobName) {
-                alert('Job name is required');
-                e.preventDefault();
-                return false;
-            }
-            
-            const existingJobNames = [];
-            document.querySelectorAll('.job-name').forEach(function(el) {
-                existingJobNames.push(el.textContent.trim().toLowerCase());
-            });
-            
-            const isEdit = window.location.pathname.includes('/edit_job/');
-            if (!isEdit && existingJobNames.includes(jobName.toLowerCase())) {
-                alert(`A backup job with the name "${jobName}" already exists. Please choose a different name.`);
-                e.preventDefault();
-                jobNameInput.focus();
-                jobNameInput.select();
-                return false;
-            }
-        });
-    }
 });
 </script>
-
 {% endblock %}

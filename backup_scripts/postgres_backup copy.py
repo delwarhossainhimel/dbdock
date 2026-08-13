@@ -9,7 +9,6 @@ from job_schedules import get_enabled_schedule_types, get_schedule_retention, no
 def postgres_backup(server, databases, location, folder_path, schedule_types, job_id=None):
     """
     PostgreSQL backup with job-specific temporary directory
-    Supports auto-detection of all databases when 'all' is in the databases list
     """
     # Create job-specific tmp directory
     job_tmp_dir = create_job_tmp_directory(job_id)
@@ -17,16 +16,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
     try:
         print(f"Backup targets: {schedule_types}")
         print(f"Job temporary directory: {job_tmp_dir}")
-        
-        # Check if 'all' is selected - auto-detect databases
-        if 'all' in databases or '__all__' in databases:
-            print("🔄 Auto-detecting all databases from PostgreSQL server...")
-            databases = get_all_postgres_databases(server)
-            if not databases:
-                return False, "No databases found on the server", None, 0, []
-            print(f"✅ Auto-detected {len(databases)} databases: {', '.join(databases)}")
-        else:
-            print(f"📊 Using manually selected databases: {', '.join(databases)}")
         
         backup_files = []
         database_results = []
@@ -133,34 +122,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         cleanup_job_tmp_directory(job_tmp_dir)
         return False, str(e), None, 0, []
 
-
-def get_all_postgres_databases(server):
-    """
-    Connect to PostgreSQL server and get all databases excluding system databases
-    """
-    try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=server.host,
-            port=server.port,
-            user=server.username,
-            password=server.password,
-            database='postgres'
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres'")
-        
-        databases = [row[0] for row in cursor.fetchall()]
-        
-        cursor.close()
-        conn.close()
-        
-        return databases
-    except Exception as e:
-        print(f"⚠️ Error detecting databases from PostgreSQL server: {e}")
-        return []
-
-
 def upload_to_storage(location, folder_path, backup_files):
     """Upload backup files using the appropriate storage provider"""
     config = json.loads(location.config)
@@ -175,7 +136,6 @@ def upload_to_storage(location, folder_path, backup_files):
         return storage_provider.upload_files(config, folder_path, backup_files)
     except Exception as e:
         return False, str(e), None, 0
-
 
 def upload_backups_for_schedules(location, base_folder_path, schedule_types, backup_files):
     uploaded_paths = []
@@ -195,12 +155,10 @@ def upload_backups_for_schedules(location, base_folder_path, schedule_types, bac
 
     return True, "Backup completed successfully", ";".join(uploaded_paths), total_size
 
-
 def build_partial_failure_message(database_results):
     succeeded = len([item for item in database_results if item['status'] == 'success'])
     failed = len(database_results) - succeeded
     return f"Backup completed with partial failures. {succeeded} succeeded, {failed} failed."
-
 
 def apply_retention_policy(location, base_folder_path, schedule_type):
     """
@@ -259,29 +217,13 @@ def apply_retention_policy(location, base_folder_path, schedule_type):
                 # Get databases for this job
                 databases = json.loads(job.databases)
                 
-                # Handle 'all' databases - we need to get actual database names
-                if 'all' in databases or '__all__' in databases:
-                    # For retention policy with auto-detected databases, we need to get the actual list
-                    try:
-                        # Get the server from the job
-                        server = job.database_server
-                        if server.type.value == 'postgres':
-                            actual_databases = get_all_postgres_databases(server)
-                            if actual_databases:
-                                databases = actual_databases
-                    except Exception as e:
-                        print(f"⚠️ Could not auto-detect databases for retention: {e}")
-                        continue
-                
                 # Delete old files for each database from the schedule-specific folder
                 for database in databases:
                     deleted_count = delete_old_backup_files(location, full_folder_path, database, cutoff_date)
-                    if deleted_count > 0:
-                        print(f"Deleted {deleted_count} old backup files for database: {database}")
+                    print(f"Deleted {deleted_count} old backup files for database: {database}")
                 
     except Exception as e:
         print(f"Error applying retention policy: {e}")
-
 
 def delete_old_backup_files(location, folder_path, database, cutoff_date):
     """Delete old backup files using the appropriate storage provider"""
