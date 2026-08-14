@@ -123,6 +123,11 @@
                                 <button class="btn btn-sm btn-outline-success run-job" data-job-id="{{ job.id }}" title="Run Now">
                                     <i class="bi bi-play-fill"></i>
                                 </button>
+                                {% if job.latest_history and job.latest_history.status == 'running' %}
+                                <button class="btn btn-sm btn-danger cancel-job" data-job-id="{{ job.id }}" title="Cancel Running Job">
+                                    <i class="bi bi-stop-circle"></i> Cancel
+                                </button>
+                                {% endif %}
                                 <a href="{{ url_for('edit_job', job_id=job.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit">
                                     <i class="bi bi-pencil"></i>
                                 </a>
@@ -226,7 +231,7 @@
                                     Run Now
                                 </button>
                                 {% endif %}
-                                
+
                                 {% if job.notification_email %}
                                 <div class="mt-2">
                                     <small class="text-muted">
@@ -638,6 +643,40 @@ document.addEventListener('DOMContentLoaded', function() {
 {% endif %}
 
 <script>
+// Cancel Job
+document.querySelectorAll('.cancel-job').forEach((button) => {
+    button.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const jobId = this.dataset.jobId;
+        const jobCard = this.closest('.job-item');
+        const jobName = jobCard ? jobCard.querySelector('.job-name').textContent : '';
+
+        if (!confirm(`Are you sure you want to cancel the running job "${jobName}"?`)) return;
+
+        const originalHtml = this.innerHTML;
+        this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+        this.disabled = true;
+
+        fetch(`/cancel_job/${jobId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        })
+        .then((response) => response.json())
+        .then((data) => {
+            alert(data.message);
+            this.innerHTML = originalHtml;
+            this.disabled = false;
+            if (data.success) {
+                location.reload();
+            }
+        })
+        .catch(() => {
+            alert('Error cancelling job');
+            this.innerHTML = originalHtml;
+            this.disabled = false;
+        });
+    });
+});
 document.addEventListener('DOMContentLoaded', function() {
     // ============================================
     // 1. TOGGLE EXPAND/COLLAPSE

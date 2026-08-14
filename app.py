@@ -134,7 +134,8 @@ def inject_schedule_helpers():
 def ensure_database_schema():
     """Ensure MySQL schema has all required columns"""
     try:
-        inspector = db.engine.execute(text("""
+        # Use db.session.execute() instead of db.engine.execute()
+        inspector = db.session.execute(text("""
             SELECT COLUMN_NAME 
             FROM INFORMATION_SCHEMA.COLUMNS 
             WHERE TABLE_NAME = 'backup_job' 
@@ -148,7 +149,7 @@ def ensure_database_schema():
             print("✅ Added schedule_config column to backup_job")
 
         # Check backup_history columns
-        inspector = db.engine.execute(text("""
+        inspector = db.session.execute(text("""
             SELECT COLUMN_NAME 
             FROM INFORMATION_SCHEMA.COLUMNS 
             WHERE TABLE_NAME = 'backup_history' 
@@ -159,6 +160,19 @@ def ensure_database_schema():
         if 'log_path' not in history_column_names:
             db.session.execute(text("ALTER TABLE backup_history ADD COLUMN log_path VARCHAR(500)"))
             print("✅ Added log_path column to backup_history")
+            
+        # Add new columns for cancellation
+        if 'is_cancelled' not in history_column_names:
+            db.session.execute(text("ALTER TABLE backup_history ADD COLUMN is_cancelled BOOLEAN DEFAULT FALSE"))
+            print("✅ Added is_cancelled column to backup_history")
+            
+        if 'cancelled_at' not in history_column_names:
+            db.session.execute(text("ALTER TABLE backup_history ADD COLUMN cancelled_at DATETIME"))
+            print("✅ Added cancelled_at column to backup_history")
+            
+        if 'cancelled_by' not in history_column_names:
+            db.session.execute(text("ALTER TABLE backup_history ADD COLUMN cancelled_by VARCHAR(50)"))
+            print("✅ Added cancelled_by column to backup_history")
 
         db.session.commit()
         print("✅ Database schema check completed")
@@ -885,6 +899,41 @@ def run_job(job_id):
         return jsonify({'success': False, 'message': 'Scheduler is not running, so the job could not be queued.'}), 503
 
     return jsonify({'success': True, 'message': 'Backup job queued successfully and is running in the background.'})
+
+@app.route('/cancel_job/<int:job_id>', methods=['POST'])
+def cancel_job(job_id):
+    """Cancel a running backup job"""
+    from scheduler import cancel_backup_job, get_scheduler_status
+    
+    # Check if scheduler is running
+    status = get_scheduler_status()
+    if not status['running']:
+        return jsonify({'success': False, 'message': 'Scheduler is not running'}), 503
+    
+    # Check if job exists
+    job = BackupJob.query.get_or_404(job_id)
+    
+    # Find the running history
+    running_history = BackupHistory.query.filter(
+        BackupHistory.backup_job_id == job_id,
+        BackupHistory.status == 'running'
+    ).order_by(BackupHistory.start_time.desc()).first()
+    
+    if not running_history:
+        return jsonify({'success': False, 'message': 'No running job found to cancel'})
+    
+    # Cancel the job
+    trigger_source = running_history.trigger_source or 'manual'
+    result = cancel_backup_job(job_id, trigger_source)
+    
+    if result:
+        return jsonify({
+            'success': True, 
+            'message': f'Job "{job.name}" cancellation requested successfully',
+            'status': 'cancelled'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'Failed to cancel job'}), 500
 
 @app.route('/toggle_job/<int:job_id>', methods=['POST'])
 def toggle_job(job_id):

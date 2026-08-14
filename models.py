@@ -119,7 +119,7 @@ class BackupJob(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationships
+    # Relationships - FIXED: Only ONE backref definition
     history = db.relationship('BackupHistory', backref='backup_job', lazy=True, cascade='all, delete-orphan')
     
     def get_databases_list(self):
@@ -150,12 +150,17 @@ class BackupHistory(db.Model):
     backup_job_id = db.Column(db.Integer, db.ForeignKey('backup_job.id'), nullable=False)
     start_time = db.Column(db.DateTime, nullable=False)
     end_time = db.Column(db.DateTime)
-    status = db.Column(db.String(20), nullable=False)  # success, failed, running
+    status = db.Column(db.String(20), nullable=False)  # success, failed, running, cancelled
     trigger_source = db.Column(db.String(20), default='manual')  # manual, daily, weekly, monthly, yearly
     message = db.Column(db.Text)
     file_paths = db.Column(db.Text)  # Semicolon-separated list of file paths
     log_path = db.Column(db.String(500))
     file_size = db.Column(db.BigInteger)
+    is_cancelled = db.Column(db.Boolean, default=False)  # New field for cancellation
+    cancelled_at = db.Column(db.DateTime)  # When the job was cancelled
+    cancelled_by = db.Column(db.String(50))  # Who cancelled the job
+    
+    # NO backref here - it's defined in BackupJob
     
     def get_file_paths_list(self):
         """Get file paths as list"""
@@ -253,12 +258,17 @@ def get_backup_statistics():
         BackupHistory.start_time >= thirty_days_ago
     ).count()
     
+    cancelled = BackupHistory.query.filter(
+        BackupHistory.status == 'cancelled',
+        BackupHistory.start_time >= thirty_days_ago
+    ).count()
+    
     running = BackupHistory.query.filter(
         BackupHistory.status == 'running',
         BackupHistory.start_time >= now - timedelta(hours=1)
     ).count()
     
-    total_runs = successful + failed
+    total_runs = successful + failed + cancelled
     success_rate = round((successful / total_runs * 100) if total_runs > 0 else 0, 1)
     
     return {
@@ -266,6 +276,7 @@ def get_backup_statistics():
         'active_jobs': active_jobs,
         'successful_runs': successful,
         'failed_runs': failed,
+        'cancelled_runs': cancelled,
         'running_jobs': running,
         'success_rate': success_rate,
         'total_runs': total_runs

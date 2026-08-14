@@ -24,15 +24,22 @@ import sys
 import time
 import threading
 import uuid
+import signal
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from log_rotation import rotate_log, cleanup_old_rotated_logs
+
 
 # Global variable to track if scheduler is already running
 scheduler = None
 scheduler_lock_file = None
 SCHEDULER_LOCK_PATH = '/tmp/backup_scheduler.lock'
 BACKUP_LOG_DIR = 'backup_logs'
+# Store running job processes for cancellation
+running_jobs = {}
+running_job_processes = {}
+cancellation_flags = {}
 
 class TeeStream:
     def __init__(self, *streams):
@@ -47,6 +54,67 @@ class TeeStream:
     def flush(self):
         for stream in self.streams:
             stream.flush()
+
+def cancel_backup_job(job_id, trigger_source=None):
+    """
+    Cancel a running backup job
+    """
+    from app import app
+    
+    with app.app_context():
+        from models import BackupHistory, db
+        from datetime import datetime
+        
+        # Build the key
+        if trigger_source:
+            key = f"{job_id}_{trigger_source}"
+        else:
+            key = str(job_id)
+        
+        # Set cancellation flag
+        cancellation_flags[key] = True
+        print(f"🛑 Cancellation requested for job {key}")
+        
+        # Find the running history record
+        query = BackupHistory.query.filter(
+            BackupHistory.backup_job_id == job_id,
+            BackupHistory.status == 'running'
+        )
+        if trigger_source:
+            query = query.filter(BackupHistory.trigger_source == trigger_source)
+        
+        history = query.order_by(BackupHistory.start_time.desc()).first()
+        
+        if history:
+            history.status = 'cancelled'
+            history.is_cancelled = True
+            history.cancelled_at = datetime.now()
+            history.cancelled_by = 'User'
+            history.message = 'Job cancelled by user'
+            db.session.commit()
+            
+            print(f"✅ Job {job_id} ({trigger_source}) marked as cancelled")
+            return True
+        
+        return False
+
+
+def is_job_cancelled(job_id, trigger_source):
+    """
+    Check if a job has been cancelled
+    """
+    key = f"{job_id}_{trigger_source}"
+    return cancellation_flags.get(key, False)
+
+
+def clear_cancellation_flag(job_id, trigger_source):
+    """
+    Clear the cancellation flag after a job finishes
+    """
+    key = f"{job_id}_{trigger_source}"
+    if key in cancellation_flags:
+        del cancellation_flags[key]
+        print(f"🧹 Cleared cancellation flag for {key}")
 
 def init_scheduler(app):
     global scheduler, scheduler_lock_file
@@ -280,9 +348,15 @@ def determine_run_targets(job, trigger_source):
 
 def run_backup_job(job_id, trigger_source='manual'):
     """
-    Run backup job with proper locking to prevent multiple executions
+    Run backup job with cancellation support
     """
+    key = f"{job_id}_{trigger_source}"
+    
     print(f"🔹 Starting backup job ID: {job_id} (trigger: {trigger_source})")
+    
+    # Clear any previous cancellation flag
+    if key in cancellation_flags:
+        del cancellation_flags[key]
     
     # Create a lock file for this specific job
     lock_file = f"/tmp/backup_job_{job_id}.lock"
@@ -301,11 +375,16 @@ def run_backup_job(job_id, trigger_source='manual'):
         return
     
     try:
-        # Import app inside the function to avoid circular imports during scheduler initialization
         from app import app
         
         with app.app_context():
             from models import BackupJob, DatabaseServer, StorageLocation, BackupHistory, db
+            
+            # Check if cancelled before starting
+            if is_job_cancelled(job_id, trigger_source):
+                print(f"🛑 Job {job_id} ({trigger_source}) was cancelled before starting")
+                clear_cancellation_flag(job_id, trigger_source)
+                return
             
             job = BackupJob.query.get(job_id)
             if not job or not job.is_active:
@@ -333,7 +412,9 @@ def run_backup_job(job_id, trigger_source='manual'):
             history = BackupHistory(
                 backup_job_id=job.id,
                 start_time=datetime.now(),
-                status='running'
+                status='running',
+                trigger_source=trigger_source,
+                is_cancelled=False
             )
             db.session.add(history)
             db.session.commit()
@@ -343,30 +424,74 @@ def run_backup_job(job_id, trigger_source='manual'):
             file_path = None
             file_size = 0
             database_results = []
+            
+            # Setup log directory and file with schedule type
             logs_dir = os.path.join(app.root_path, BACKUP_LOG_DIR)
             os.makedirs(logs_dir, exist_ok=True)
-            log_filename = f"backup_job_{job.id}_{history.start_time.strftime('%Y%m%d_%H%M%S')}_{history.id}.log"
+            
+            # Use schedule-specific log file
+            log_filename = f"backup_job_{job.id}_{trigger_source}.log"
             log_path = os.path.join(logs_dir, log_filename)
             history.log_path = log_path
             db.session.commit()
+            
+            # Rotate log if needed
+            rotate_log(log_path)
+            cleanup_old_rotated_logs(logs_dir)
+            
+            run_id = f"{history.id}_{int(datetime.now().timestamp())}"
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             try:
                 server = job.database_server
                 location = job.storage_location
                 databases = json.loads(job.databases)
-                with open(log_path, 'a', encoding='utf-8') as log_file:
+                
+                # Check if cancelled
+                if is_job_cancelled(job_id, trigger_source):
+                    print(f"🛑 Job {job_id} ({trigger_source}) cancelled during initialization")
+                    history.status = 'cancelled'
+                    history.is_cancelled = True
+                    history.cancelled_at = datetime.now()
+                    history.message = 'Job cancelled by user'
+                    db.session.commit()
+                    return
+                
+                log_file = None
+                try:
+                    log_file = open(log_path, 'a', encoding='utf-8')
+                except Exception as e:
+                    print(f"⚠️ Error opening log file: {e}")
+                
+                if log_file:
                     tee_stdout = TeeStream(sys.stdout, log_file)
                     tee_stderr = TeeStream(sys.stderr, log_file)
-
-                    with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
-                        print(f"🧾 Log file created: {log_path}")
-                        print(f"📊 Backup details:")
-                        print(f"   - Server: {server.name} ({server.type.value})")
-                        print(f"   - Storage: {location.name} ({location.type.value})")
-                        print(f"   - Databases: {databases}")
-                        print(f"   - Schedule config: {schedule_targets}")
-                        print(f"   - Folder: {job.folder_path}")
-                        
+                else:
+                    tee_stdout = TeeStream(sys.stdout)
+                    tee_stderr = TeeStream(sys.stderr)
+                
+                with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+                    print(f"\n{'='*80}")
+                    print(f"🔹 BACKUP RUN STARTED: {timestamp}")
+                    print(f"   Run ID: {run_id}")
+                    print(f"   Job: {job.name} (ID: {job.id})")
+                    print(f"   Schedule Type: {trigger_source}")
+                    print(f"   Log file: {log_path}")
+                    print(f"{'='*80}\n")
+                    
+                    print(f"📊 Backup details:")
+                    print(f"   - Server: {server.name} ({server.type.value})")
+                    print(f"   - Storage: {location.name} ({location.type.value})")
+                    print(f"   - Databases: {databases}")
+                    print(f"   - Schedule config: {schedule_targets}")
+                    print(f"   - Folder: {job.folder_path}")
+                    
+                    # Check if cancelled before backup
+                    if is_job_cancelled(job_id, trigger_source):
+                        print(f"🛑 Job {job_id} ({trigger_source}) cancelled before backup execution")
+                        success = False
+                        message = "Job cancelled by user"
+                    else:
                         # Run backup based on database type
                         if server.type.value == 'mysql':
                             success, message, file_path, file_size, database_results = mysql_backup(
@@ -378,24 +503,45 @@ def run_backup_job(job_id, trigger_source='manual'):
                             )
                         else:
                             success, message, file_path, file_size, database_results = False, "Unsupported database type", None, 0, []
+                    
+                    print(f"\n{'='*80}")
+                    print(f"🏁 BACKUP RUN COMPLETED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"   Status: {'SUCCESS' if success else 'FAILED' if not is_job_cancelled(job_id, trigger_source) else 'CANCELLED'}")
+                    print(f"   Message: {message}")
+                    print(f"   Duration: {(datetime.now() - history.start_time).total_seconds():.2f} seconds")
+                    print(f"{'='*80}\n")
+                
+                if log_file and not log_file.closed:
+                    log_file.close()
                 
                 # Update history record
                 history.end_time = datetime.now()
-                history.status = 'success' if success else 'failed'
-                history.message = build_history_message(message, database_results)
+                
+                # Check if cancelled during execution
+                if is_job_cancelled(job_id, trigger_source):
+                    history.status = 'cancelled'
+                    history.is_cancelled = True
+                    history.cancelled_at = datetime.now()
+                    history.message = 'Job cancelled by user'
+                    success = False
+                else:
+                    history.status = 'success' if success else 'failed'
+                    history.message = message
+                
                 history.file_path = file_path
                 history.file_size = file_size
+                history.trigger_source = trigger_source
                 
                 duration = (history.end_time - history.start_time).total_seconds()
                 
-                if success:
-                    print(f"✅ Backup completed successfully: {job.name}")
+                if history.status == 'cancelled':
+                    print(f"🛑 Backup cancelled: {job.name} ({trigger_source})")
+                elif success:
+                    print(f"✅ Backup completed successfully: {job.name} ({trigger_source})")
                     print(f"   - Duration: {duration:.2f} seconds")
                     print(f"   - File size: {file_size} bytes")
-                    print(f"   - File path: {file_path}")
-                    
                 else:
-                    print(f"❌ Backup failed: {job.name}")
+                    print(f"❌ Backup failed: {job.name} ({trigger_source})")
                     print(f"   - Error: {message}")
                     print(f"   - Duration: {duration:.2f} seconds")
                     
@@ -404,23 +550,43 @@ def run_backup_job(job_id, trigger_source='manual'):
                 history.status = 'failed'
                 message = f"Unexpected error: {str(e)}"
                 history.message = message
-                with open(log_path, 'a', encoding='utf-8') as log_file:
-                    tee_stdout = TeeStream(sys.stdout, log_file)
-                    tee_stderr = TeeStream(sys.stderr, log_file)
-                    with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
-                        print(f"💥 Unexpected error in backup job {job.name}: {e}")
+                history.trigger_source = trigger_source
+                
+                # Check if it was cancelled
+                if is_job_cancelled(job_id, trigger_source):
+                    history.status = 'cancelled'
+                    history.is_cancelled = True
+                    history.cancelled_at = datetime.now()
+                    history.message = 'Job cancelled by user'
+                
+                try:
+                    with open(log_path, 'a', encoding='utf-8') as log_file:
+                        print(f"💥 Unexpected error in backup job {job.name}: {e}", file=log_file)
                         import traceback
-                        traceback.print_exc()
+                        traceback.print_exc(file=log_file)
+                except:
+                    pass
+                
+                print(f"💥 Unexpected error in backup job {job.name} ({trigger_source}): {e}")
+                import traceback
+                traceback.print_exc()
             
             db.session.commit()
 
-            if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
-                send_notification_email(job, history, schedule_targets, success, message, database_results)
+            # Clear cancellation flag
+            clear_cancellation_flag(job_id, trigger_source)
+
+            # Send notification only if not cancelled
+            if history.status != 'cancelled':
+                if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
+                    send_notification_email(job, history, schedule_targets, success, message, database_results)
             
     except Exception as e:
-        print(f"💥 Critical error in run_backup_job for job {job_id}: {e}")
+        print(f"💥 Critical error in run_backup_job for job {job_id} ({trigger_source}): {e}")
         import traceback
         traceback.print_exc()
+        # Clear cancellation flag on error too
+        clear_cancellation_flag(job_id, trigger_source)
         
     finally:
         # Release lock
@@ -434,7 +600,7 @@ def run_backup_job(job_id, trigger_source='manual'):
             except:
                 pass
         except Exception as e:
-            print(f"⚠️ Error releasing lock for job {job_id}: {e}")
+            print(f"⚠️ Error releasing lock for job {job_id} ({trigger_source}): {e}")
 
 def build_history_message(message, database_results):
     if not database_results:
