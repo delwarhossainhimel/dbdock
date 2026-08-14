@@ -54,32 +54,60 @@ def apply_legacy_schedule(config, schedule_type, cron_expression):
         config["yearly"]["month"] = month
 
 
+# def build_schedule_config_from_form(form_data):
+#     config = default_schedule_config()
+#     selected = set(form_data.getlist("schedule_types"))
+
+#     config["daily"]["enabled"] = "daily" in selected
+#     config["daily"]["time"] = form_data.get("daily_time", "00:00") or "00:00"
+#     config["daily"]["retention"] = form_data.get("daily_retention", "1") or "1"
+
+#     config["weekly"]["enabled"] = "weekly" in selected
+#     config["weekly"]["day"] = form_data.get("weekly_day", "0") or "0"
+#     config["weekly"]["time"] = form_data.get("weekly_time", "00:00") or "00:00"
+#     config["weekly"]["retention"] = form_data.get("weekly_retention", "1") or "1"
+
+#     config["monthly"]["enabled"] = "monthly" in selected
+#     config["monthly"]["day"] = form_data.get("monthly_day", "1") or "1"
+#     config["monthly"]["time"] = form_data.get("monthly_time", "00:00") or "00:00"
+#     config["monthly"]["retention"] = form_data.get("monthly_retention", "1") or "1"
+
+#     config["yearly"]["enabled"] = "yearly" in selected
+#     config["yearly"]["month"] = form_data.get("yearly_month", "1") or "1"
+#     config["yearly"]["day"] = form_data.get("yearly_day", "1") or "1"
+#     config["yearly"]["time"] = form_data.get("yearly_time", "00:00") or "00:00"
+#     config["yearly"]["retention"] = form_data.get("yearly_retention", "1") or "1"
+
+#     return config
+
 def build_schedule_config_from_form(form_data):
     config = default_schedule_config()
     selected = set(form_data.getlist("schedule_types"))
-
+    
+    # Get the master time
+    master_time = form_data.get("master_time", "00:00")
+    
     config["daily"]["enabled"] = "daily" in selected
-    config["daily"]["time"] = form_data.get("daily_time", "00:00") or "00:00"
-    config["daily"]["retention"] = form_data.get("daily_retention", "1") or "1"
-
+    config["daily"]["time"] = master_time
+    config["daily"]["retention"] = form_data.get("daily_retention", "7") or "7"
+    
     config["weekly"]["enabled"] = "weekly" in selected
     config["weekly"]["day"] = form_data.get("weekly_day", "0") or "0"
-    config["weekly"]["time"] = form_data.get("weekly_time", "00:00") or "00:00"
-    config["weekly"]["retention"] = form_data.get("weekly_retention", "1") or "1"
-
+    config["weekly"]["time"] = master_time
+    config["weekly"]["retention"] = form_data.get("weekly_retention", "4") or "4"
+    
     config["monthly"]["enabled"] = "monthly" in selected
     config["monthly"]["day"] = form_data.get("monthly_day", "1") or "1"
-    config["monthly"]["time"] = form_data.get("monthly_time", "00:00") or "00:00"
-    config["monthly"]["retention"] = form_data.get("monthly_retention", "1") or "1"
-
+    config["monthly"]["time"] = master_time
+    config["monthly"]["retention"] = form_data.get("monthly_retention", "12") or "12"
+    
     config["yearly"]["enabled"] = "yearly" in selected
     config["yearly"]["month"] = form_data.get("yearly_month", "1") or "1"
     config["yearly"]["day"] = form_data.get("yearly_day", "1") or "1"
-    config["yearly"]["time"] = form_data.get("yearly_time", "00:00") or "00:00"
-    config["yearly"]["retention"] = form_data.get("yearly_retention", "1") or "1"
-
+    config["yearly"]["time"] = master_time
+    config["yearly"]["retention"] = form_data.get("yearly_retention", "5") or "5"
+    
     return config
-
 
 def validate_schedule_config(config):
     enabled_types = get_enabled_schedule_types(config)
@@ -185,12 +213,48 @@ def get_schedule_entries(config):
     return entries
 
 
+# def format_schedule_entry(schedule_type, details):
+#     time_value = details.get("time", "00:00")
+#     retention = details.get("retention", "1")
+
+#     if schedule_type == "daily":
+#         return f"Daily at {time_value} | keep {retention}"
+#     if schedule_type == "weekly":
+#         weekday_names = {
+#             "0": "Sunday",
+#             "1": "Monday",
+#             "2": "Tuesday",
+#             "3": "Wednesday",
+#             "4": "Thursday",
+#             "5": "Friday",
+#             "6": "Saturday",
+#         }
+#         return f"Weekly on {weekday_names.get(details.get('day', '0'), 'Sunday')} at {time_value} | keep {retention}"
+#     if schedule_type == "monthly":
+#         return f"Monthly on day {details.get('day', '1')} at {time_value} | keep {retention}"
+#     if schedule_type == "yearly":
+#         month_names = {
+#             "1": "January",
+#             "2": "February",
+#             "3": "March",
+#             "4": "April",
+#             "5": "May",
+#             "6": "June",
+#             "7": "July",
+#             "8": "August",
+#             "9": "September",
+#             "10": "October",
+#             "11": "November",
+#             "12": "December",
+#         }
+#         return f"Yearly on {month_names.get(details.get('month', '1'), 'January')} {details.get('day', '1')} at {time_value} | keep {retention}"
+#     return schedule_type
 def format_schedule_entry(schedule_type, details):
     time_value = details.get("time", "00:00")
     retention = details.get("retention", "1")
 
     if schedule_type == "daily":
-        return f"Daily at {time_value} | keep {retention}"
+        return f"Daily at {time_value} | keep {retention} day(s)"
     if schedule_type == "weekly":
         weekday_names = {
             "0": "Sunday",
@@ -201,9 +265,9 @@ def format_schedule_entry(schedule_type, details):
             "5": "Friday",
             "6": "Saturday",
         }
-        return f"Weekly on {weekday_names.get(details.get('day', '0'), 'Sunday')} at {time_value} | keep {retention}"
+        return f"Weekly on {weekday_names.get(details.get('day', '0'), 'Sunday')} at {time_value} | keep {retention} week(s)"
     if schedule_type == "monthly":
-        return f"Monthly on day {details.get('day', '1')} at {time_value} | keep {retention}"
+        return f"Monthly on day {details.get('day', '1')} at {time_value} | keep {retention} month(s)"
     if schedule_type == "yearly":
         month_names = {
             "1": "January",
@@ -219,9 +283,8 @@ def format_schedule_entry(schedule_type, details):
             "11": "November",
             "12": "December",
         }
-        return f"Yearly on {month_names.get(details.get('month', '1'), 'January')} {details.get('day', '1')} at {time_value} | keep {retention}"
+        return f"Yearly on {month_names.get(details.get('month', '1'), 'January')} {details.get('day', '1')} at {time_value} | keep {retention} year(s)"
     return schedule_type
-
 
 def parse_time(time_value):
     hour, minute = (time_value or "00:00").split(":", 1)
@@ -235,15 +298,27 @@ def matches_schedule(schedule_type, details, dt):
 
     if schedule_type == "daily":
         return True
+    
     if schedule_type == "weekly":
         schedule_day = int(details.get("day", "0"))
         python_weekday = dt.weekday()
         cron_weekday = (python_weekday + 1) % 7
+        
+        # DEBUG: Print what's happening
+        print(f"🔍 DEBUG matches_schedule:")
+        print(f"   schedule_day: {schedule_day} ({['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][schedule_day]})")
+        print(f"   python_weekday: {python_weekday} ({['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][python_weekday]})")
+        print(f"   cron_weekday: {cron_weekday} ({['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][cron_weekday]})")
+        print(f"   Match: {cron_weekday == schedule_day}")
+        
         return cron_weekday == schedule_day
+    
     if schedule_type == "monthly":
         return dt.day == int(details.get("day", "1"))
+    
     if schedule_type == "yearly":
         return dt.month == int(details.get("month", "1")) and dt.day == int(details.get("day", "1"))
+    
     return False
 
 

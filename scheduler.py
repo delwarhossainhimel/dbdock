@@ -50,7 +50,8 @@ class TeeStream:
 
 def init_scheduler(app):
     global scheduler, scheduler_lock_file
-    
+    timezone = app.config.get('APP_TIMEZONE', 'Asia/Dhaka')
+
     # Prevent multiple scheduler instances
     if scheduler and scheduler.running:
         print("✅ Scheduler is already running")
@@ -87,7 +88,7 @@ def init_scheduler(app):
             jobstores=jobstores,
             executors=executors,
             job_defaults=job_defaults,
-            timezone='UTC'
+            timezone='Asia/Dhaka'
         ))
         
         scheduler.init_app(app)
@@ -159,7 +160,13 @@ def schedule_backup_job(scheduler_obj, job):
         for entry in schedule_entries:
             cron_parts = entry["cron_expression"].split()
             minute, hour, day, month, day_of_week = cron_parts
-
+            # DEBUG: Print the cron parts
+            print(f"🔍 DEBUG Cron parts for {entry['type']}:")
+            print(f"   minute: {minute}")
+            print(f"   hour: {hour}")
+            print(f"   day: {day}")
+            print(f"   month: {month}")
+            print(f"   day_of_week: {day_of_week}")
             scheduler_obj.add_job(
                 id=get_schedule_job_id(job.id, entry["type"]),
                 func=run_backup_job,
@@ -191,9 +198,18 @@ def get_next_run_time(scheduler_obj, job_id):
         for scheduled_job in scheduler_obj.get_jobs():
             if scheduled_job.id.startswith(f'backup_job_{job_id}_'):
                 if hasattr(scheduled_job, 'next_run_time') and scheduled_job.next_run_time:
+                    schedule_type = scheduled_job.id.replace(f'backup_job_{job_id}_', '')
+                    next_time = scheduled_job.next_run_time
+                    
+                    # Convert to local timezone if needed
+                    if next_time.tzinfo is None:
+                        import pytz
+                        local_tz = pytz.timezone('Asia/Dhaka')
+                        next_time = local_tz.localize(next_time)
+                    
                     next_runs.append(
-                        f"{scheduled_job.id.replace(f'backup_job_{job_id}_', '').capitalize()}: "
-                        f"{scheduled_job.next_run_time.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        f"{schedule_type.capitalize()}: "
+                        f"{next_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
                     )
 
         return next_runs or ["Calculating..."]
@@ -245,7 +261,12 @@ def determine_run_targets(job, trigger_source):
         return enabled_schedule_types or ['manual']
 
     if trigger_source in enabled_schedule_types:
-        current_time = datetime.now(timezone.utc)
+        # Use local time from the scheduler
+        from datetime import datetime
+        import pytz
+        local_tz = pytz.timezone('Asia/Dhaka')
+        current_time = datetime.now(local_tz)
+        
         matched_types = [
             schedule_type
             for schedule_type in enabled_schedule_types
@@ -349,11 +370,11 @@ def run_backup_job(job_id, trigger_source='manual'):
                         # Run backup based on database type
                         if server.type.value == 'mysql':
                             success, message, file_path, file_size, database_results = mysql_backup(
-                                server, databases, location, job.folder_path, schedule_targets, job.id
+                                server, databases, location, job.folder_path, schedule_targets, job.id, trigger_source
                             )
                         elif server.type.value == 'postgres':
                             success, message, file_path, file_size, database_results = postgres_backup(
-                                server, databases, location, job.folder_path, schedule_targets, job.id
+                                server, databases, location, job.folder_path, schedule_targets, job.id, trigger_source
                             )
                         else:
                             success, message, file_path, file_size, database_results = False, "Unsupported database type", None, 0, []
@@ -876,11 +897,18 @@ def print_scheduler_debug_info():
     print(f"📊 Scheduler Status: {status['status']}")
     print(f"🏃 Running: {status['running']}")
     print(f"📋 Job Count: {status['job_count']}")
+    print(f"⏰ Timezone: {scheduler.timezone if hasattr(scheduler, 'timezone') else 'UTC'}")
     
     if status['job_count'] > 0:
-        print("\n📅 Scheduled Jobs:")
+        print("\n📅 Scheduled Jobs (Local Time):")
         for job_info in status['next_runs']:
-            print(f"   - {job_info['job_id']}: {job_info['next_run']}")
+            # Convert to local time
+            job = scheduler.get_job(job_info['job_id'])
+            if job and job.next_run_time:
+                local_time = job.next_run_time.astimezone()
+                print(f"   - {job_info['job_id']}: {local_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            else:
+                print(f"   - {job_info['job_id']}: Not scheduled")
     else:
         print("\n📭 No jobs scheduled")
     

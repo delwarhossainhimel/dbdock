@@ -1,151 +1,23 @@
 import os
 import subprocess
 import json
+import gzip
+import shutil
 from datetime import datetime
 from .storage_providers import get_storage_provider
 from .utils import create_job_tmp_directory, cleanup_job_tmp_directory, create_full_folder_path
 from job_schedules import get_enabled_schedule_types, get_schedule_retention, normalize_schedule_config
 
-# def mysql_backup(server, databases, location, folder_path, schedule_types, job_id=None):
-#     """
-#     MySQL backup with job-specific temporary directory
-#     Supports auto-detection of all databases when 'all' is in the databases list
-#     """
-#     # Create job-specific tmp directory
-#     job_tmp_dir = create_job_tmp_directory(job_id)
+
+def mysql_backup(server, databases, location, folder_path, schedule_types, job_id=None, schedule_type=None):
+    """
+    MySQL backup with improved error handling and step-by-step processing.
+    Each database is: dumped -> compressed -> uploaded -> cleaned up
+    """
+    print(f"🔍 DEBUG: mysql_backup called with schedule_type={schedule_type}, job_id={job_id}")
     
-#     try:
-#         print(f"Backup targets: {schedule_types}")
-#         print(f"Job temporary directory: {job_tmp_dir}")
-        
-#         # Check if 'all' is selected - auto-detect databases
-#         if 'all' in databases or '__all__' in databases:
-#             print("🔄 Auto-detecting all databases from server...")
-#             databases = get_all_mysql_databases(server)
-#             if not databases:
-#                 return False, "No databases found on the server", None, 0, []
-#             print(f"✅ Auto-detected {len(databases)} databases: {', '.join(databases)}")
-#         else:
-#             print(f"📊 Using manually selected databases: {', '.join(databases)}")
-        
-#         backup_files = []
-#         database_results = []
-#         total_success = 0
-#         total_failed = 0
-        
-#         for database in databases:
-#             # Generate filename with new format: database_YYYY-MM-DD.sql.gz
-#             timestamp = datetime.now().strftime('%Y-%m-%d')
-#             filename = f"{database}_{timestamp}.sql.gz"
-#             filepath = os.path.join(job_tmp_dir, filename)
-            
-#             print(f"Creating MySQL backup: {filepath}")
-            
-#             # Run mysqldump command
-#             cmd = [
-#                 'mysqldump',
-#                 f'-h{server.host}',
-#                 f'-P{server.port}',
-#                 f'-u{server.username}',
-#                 f'-p{server.password}',
-#                 '--single-transaction',
-#                 '--routines',
-#                 '--triggers',
-#                 database
-#             ]
-            
-#             print(f"Running command: mysqldump -h{server.host} -P{server.port} -u{server.username} [database: {database}]")
-            
-#             # Execute dump and compress
-#             try:
-#                 with open(filepath, 'w') as f:
-#                     dump_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-#                     compress_process = subprocess.Popen(['gzip'], stdin=dump_process.stdout, stdout=f)
-#                     compress_process.wait()
-                
-#                 # Check if the process was successful
-#                 if compress_process.returncode == 0:
-#                     # Verify file was created
-#                     if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-#                         backup_files.append((filepath, filename))
-#                         file_size = os.path.getsize(filepath)
-#                         print(f"✓ Created MySQL backup: {filepath} ({file_size} bytes)")
-#                         database_results.append({
-#                             'database': database,
-#                             'status': 'success',
-#                             'message': 'Backup completed successfully',
-#                             'file_size': file_size,
-#                         })
-#                         total_success += 1
-#                     else:
-#                         print(f"✗ Backup file was not created properly for database {database}")
-#                         database_results.append({
-#                             'database': database,
-#                             'status': 'failed',
-#                             'message': f"Backup file was not created properly for database {database}",
-#                             'file_size': 0,
-#                         })
-#                         total_failed += 1
-#                 else:
-#                     # Get error message
-#                     _, stderr = dump_process.communicate()
-#                     error_msg = stderr.decode() if stderr else "Unknown error"
-#                     print(f"✗ MySQL backup failed for database {database}: {error_msg}")
-#                     database_results.append({
-#                         'database': database,
-#                         'status': 'failed',
-#                         'message': f"MySQL backup failed for database {database}: {error_msg}",
-#                         'file_size': 0,
-#                     })
-#                     total_failed += 1
-                    
-#             except Exception as e:
-#                 print(f"✗ Error during MySQL backup process for database {database}: {str(e)}")
-#                 database_results.append({
-#                     'database': database,
-#                     'status': 'failed',
-#                     'message': f"Error during MySQL backup process for database {database}: {str(e)}",
-#                     'file_size': 0,
-#                 })
-#                 total_failed += 1
-
-#         if backup_files:
-#             result = upload_backups_for_schedules(location, folder_path, schedule_types, backup_files)
-#         else:
-#             result = (False, "No MySQL backup files were created", None, 0)
-        
-#         # Clean up only this job's temporary directory
-#         cleanup_job_tmp_directory(job_tmp_dir)
-
-#         # Determine overall success based on ALL databases
-#         # If any database failed, the overall backup is considered PARTIAL or FAILED
-#         if total_failed == 0 and total_success > 0:
-#             # All databases succeeded
-#             message = f"Successfully backed up all {total_success} databases"
-#             return True, message, result[2], result[3], database_results
-#         elif total_success > 0 and total_failed > 0:
-#             # Partial success - some databases failed
-#             message = f"Partial success: {total_success} succeeded, {total_failed} failed out of {len(databases)} databases"
-#             return False, message, result[2], result[3], database_results
-#         elif total_success == 0 and total_failed > 0:
-#             # All databases failed
-#             message = f"All {total_failed} databases failed to backup"
-#             return False, message, None, 0, database_results
-#         else:
-#             # No databases processed
-#             return False, "No databases were processed", None, 0, database_results
-            
-#     except Exception as e:
-#         # Clean up on error too - but only this job's directory
-#         cleanup_job_tmp_directory(job_tmp_dir)
-#         return False, str(e), None, 0, []
-def mysql_backup(server, databases, location, folder_path, schedule_types, job_id=None):
-    """
-    MySQL backup with job-specific temporary directory
-    Supports auto-detection of all databases when 'all' is in the databases list
-    """
-    # Create job-specific tmp directory
-    job_tmp_dir = create_job_tmp_directory(job_id)
+    # Create job and schedule-specific tmp directory
+    job_tmp_dir = create_job_tmp_directory(job_id, schedule_type)
     
     try:
         print(f"Backup targets: {schedule_types}")
@@ -161,40 +33,47 @@ def mysql_backup(server, databases, location, folder_path, schedule_types, job_i
         else:
             print(f"📊 Using manually selected databases: {', '.join(databases)}")
         
-        backup_files = []
-        database_results = []
-        total_success = 0
-        total_failed = 0
-        
-        # First, verify all databases exist
+        # Verify all databases exist first
         print("🔍 Verifying databases exist...")
-        for database in databases:
-            if not check_database_exists(server, database):
-                print(f"✗ Database '{database}' does NOT exist on the server!")
-                database_results.append({
-                    'database': database,
-                    'status': 'failed',
-                    'message': f"Database '{database}' does not exist on the server",
-                    'file_size': 0,
-                })
-                total_failed += 1
+        valid_databases = []
+        invalid_databases = []
         
-        # Filter out non-existent databases
-        valid_databases = [db for db in databases if check_database_exists(server, db)]
+        for database in databases:
+            if check_database_exists(server, database):
+                valid_databases.append(database)
+            else:
+                print(f"✗ Database '{database}' does NOT exist on the server!")
+                invalid_databases.append(database)
+        
         if not valid_databases:
-            return False, "No valid databases found to backup", None, 0, database_results
+            cleanup_job_tmp_directory(job_tmp_dir)
+            return False, "No valid databases found to backup", None, 0, []
         
         print(f"✅ Found {len(valid_databases)} valid databases: {', '.join(valid_databases)}")
         
+        # Track results for each database
+        database_results = []
+        all_backup_files = []  # For tracking all successfully backed up files
+        total_success = 0
+        total_failed = 0
+        uploaded_files = []
+        total_size = 0
+        
+        # Process each database one by one
         for database in valid_databases:
-            # Generate filename with new format: database_YYYY-MM-DD.sql.gz
+            print(f"\n{'='*60}")
+            print(f"📦 Processing database: {database}")
+            print(f"{'='*60}")
+            
             timestamp = datetime.now().strftime('%Y-%m-%d')
-            filename = f"{database}_{timestamp}.sql.gz"
-            filepath = os.path.join(job_tmp_dir, filename)
             
-            print(f"Creating MySQL backup: {filepath}")
+            # Step 1: Dump database to .sql file
+            sql_filename = f"{database}_{timestamp}.sql"
+            sql_filepath = os.path.join(job_tmp_dir, sql_filename)
             
-            # Run mysqldump command
+            print(f"📝 Step 1: Dumping database '{database}' to {sql_filename}...")
+            
+            # Run mysqldump to create .sql file
             cmd = [
                 'mysqldump',
                 f'-h{server.host}',
@@ -204,93 +83,192 @@ def mysql_backup(server, databases, location, folder_path, schedule_types, job_i
                 '--single-transaction',
                 '--routines',
                 '--triggers',
+                '--add-drop-database',
+                '--databases',
                 database
             ]
             
-            print(f"Running command: mysqldump -h{server.host} -P{server.port} -u{server.username} [database: {database}]")
+            dump_success = False
+            dump_error = ""
             
-            # Execute dump with proper error capture
             try:
-                # Use Popen with pipe for stderr capture
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                
-                # Open the output file for writing (will be compressed with gzip)
-                with open(filepath, 'w') as f:
-                    # Compress the output with gzip
-                    gzip_process = subprocess.Popen(
-                        ['gzip'],
-                        stdin=process.stdout,
-                        stdout=f
-                    )
-                    process.stdout.close()
-                    gzip_process.communicate()
-                
-                # Check if the gzip process was successful
-                if gzip_process.returncode == 0:
-                    # Verify file was created and has content
-                    if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-                        backup_files.append((filepath, filename))
-                        file_size = os.path.getsize(filepath)
-                        print(f"✓ Created MySQL backup: {filepath} ({file_size} bytes)")
-                        database_results.append({
-                            'database': database,
-                            'status': 'success',
-                            'message': 'Backup completed successfully',
-                            'file_size': file_size,
-                        })
-                        total_success += 1
-                    else:
-                        print(f"✗ Backup file was not created properly for database {database}")
-                        database_results.append({
-                            'database': database,
-                            'status': 'failed',
-                            'message': f"Backup file was not created properly for database {database}",
-                            'file_size': 0,
-                        })
-                        total_failed += 1
-                else:
-                    # Get error message from process
+                with open(sql_filepath, 'w') as f:
+                    process = subprocess.Popen(cmd, stdout=f, stderr=subprocess.PIPE, text=True)
                     _, stderr = process.communicate()
-                    error_msg = stderr.strip() if stderr else "Unknown error"
-                    print(f"✗ MySQL backup failed for database {database}: {error_msg}")
-                    database_results.append({
-                        'database': database,
-                        'status': 'failed',
-                        'message': f"MySQL backup failed: {error_msg}",
-                        'file_size': 0,
-                    })
-                    total_failed += 1
                     
+                    if process.returncode == 0:
+                        dump_success = True
+                        sql_size = os.path.getsize(sql_filepath) if os.path.exists(sql_filepath) else 0
+                        print(f"   ✅ Dump completed successfully! Size: {sql_size} bytes")
+                    else:
+                        dump_success = False
+                        dump_error = stderr.strip() if stderr else "Unknown error"
+                        print(f"   ❌ Dump failed! Error: {dump_error}")
+                        
             except Exception as e:
-                print(f"✗ Error during MySQL backup process for database {database}: {str(e)}")
+                dump_success = False
+                dump_error = str(e)
+                print(f"   ❌ Dump failed with exception: {dump_error}")
+            
+            # If dump failed, record failure and continue to next database
+            if not dump_success:
                 database_results.append({
                     'database': database,
                     'status': 'failed',
-                    'message': f"Error during backup: {str(e)}",
+                    'message': f"Dump failed: {dump_error}",
                     'file_size': 0,
                 })
                 total_failed += 1
-
-        if backup_files:
-            result = upload_backups_for_schedules(location, folder_path, schedule_types, backup_files)
-        else:
-            result = (False, "No MySQL backup files were created", None, 0)
+                
+                # Clean up partial files if they exist
+                if os.path.exists(sql_filepath):
+                    os.remove(sql_filepath)
+                    print(f"   🗑️ Removed partial dump file")
+                continue
+            
+            # Step 2: Compress .sql to .sql.gz
+            gz_filename = f"{database}_{timestamp}.sql.gz"
+            gz_filepath = os.path.join(job_tmp_dir, gz_filename)
+            
+            print(f"📦 Step 2: Compressing {sql_filename} to {gz_filename}...")
+            
+            compress_success = False
+            compress_error = ""
+            compressed_size = 0
+            
+            try:
+                # Compress using gzip
+                with open(sql_filepath, 'rb') as f_in:
+                    with gzip.open(gz_filepath, 'wb', compresslevel=6) as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                
+                compressed_size = os.path.getsize(gz_filepath) if os.path.exists(gz_filepath) else 0
+                compress_success = True
+                print(f"   ✅ Compression completed! Compressed size: {compressed_size} bytes")
+                
+            except Exception as e:
+                compress_success = False
+                compress_error = str(e)
+                print(f"   ❌ Compression failed: {compress_error}")
+            
+            # If compression failed, record failure and continue
+            if not compress_success:
+                database_results.append({
+                    'database': database,
+                    'status': 'failed',
+                    'message': f"Compression failed: {compress_error}",
+                    'file_size': 0,
+                })
+                total_failed += 1
+                
+                # Clean up temp files
+                if os.path.exists(sql_filepath):
+                    os.remove(sql_filepath)
+                if os.path.exists(gz_filepath):
+                    os.remove(gz_filepath)
+                continue
+            
+            # Step 3: Upload to storage
+            print(f"📤 Step 3: Uploading {gz_filename} to storage...")
+            
+            # Upload for each schedule type
+            upload_success = False
+            upload_message = ""
+            uploaded_path = ""
+            
+            try:
+                # Upload to each schedule type folder
+                for schedule_type_item in schedule_types:
+                    full_folder_path = create_full_folder_path(folder_path, schedule_type_item)
+                    print(f"   📤 Uploading to: {full_folder_path}")
+                    
+                    # Use the storage provider
+                    config = json.loads(location.config)
+                    storage_type = location.type.value
+                    storage_provider = get_storage_provider(storage_type)
+                    
+                    if storage_provider:
+                        # Upload single file
+                        upload_result = storage_provider.upload_files(
+                            config, 
+                            full_folder_path, 
+                            [(gz_filepath, gz_filename)]
+                        )
+                        
+                        if upload_result[0]:
+                            upload_success = True
+                            uploaded_path = upload_result[2] if upload_result[2] else gz_filename
+                            print(f"   ✅ Uploaded successfully: {uploaded_path}")
+                            
+                            # Add to uploaded files list
+                            all_backup_files.append((gz_filepath, gz_filename))
+                            total_size += compressed_size
+                            uploaded_files.append(uploaded_path)
+                        else:
+                            print(f"   ❌ Upload failed: {upload_result[1]}")
+                    else:
+                        print(f"   ❌ Storage provider not found for type: {storage_type}")
+                
+            except Exception as e:
+                print(f"   ❌ Upload error: {str(e)}")
+                upload_success = False
+                upload_message = str(e)
+            
+            # If upload failed, record failure
+            if not upload_success:
+                database_results.append({
+                    'database': database,
+                    'status': 'failed',
+                    'message': f"Upload failed: {upload_message}",
+                    'file_size': compressed_size if compress_success else 0,
+                })
+                total_failed += 1
+            else:
+                database_results.append({
+                    'database': database,
+                    'status': 'success',
+                    'message': 'Backup completed successfully',
+                    'file_size': compressed_size,
+                })
+                total_success += 1
+            
+            # Step 4: Clean up temp files for this database
+            print(f"🧹 Step 4: Cleaning up temp files for {database}...")
+            try:
+                if os.path.exists(sql_filepath):
+                    os.remove(sql_filepath)
+                    print(f"   🗑️ Removed: {sql_filename}")
+                if os.path.exists(gz_filepath):
+                    os.remove(gz_filepath)
+                    print(f"   🗑️ Removed: {gz_filename}")
+            except Exception as e:
+                print(f"   ⚠️ Error cleaning up: {e}")
+            
+            print(f"✅ Finished processing database: {database}")
         
-        # Clean up only this job's temporary directory
-        cleanup_job_tmp_directory(job_tmp_dir)
-
-        # Determine overall success based on ALL databases
+        # Clean up the temporary directory
+        print(f"\n🧹 Cleaning up temporary directory: {job_tmp_dir}")
+        try:
+            if os.path.exists(job_tmp_dir):
+                os.rmdir(job_tmp_dir)
+                print(f"   ✅ Removed directory: {job_tmp_dir}")
+        except Exception as e:
+            print(f"   ⚠️ Could not remove directory: {e}")
+        
+        # After all databases are processed, apply retention policy
+        print(f"\n🗄️ Applying retention policy...")
+        for schedule_type_item in schedule_types:
+            apply_retention_policy(location, folder_path, schedule_type_item)
+        
+        # Build the final result
+        uploaded_files_str = ";".join(uploaded_files) if uploaded_files else None
+        
         if total_failed == 0 and total_success > 0:
             message = f"Successfully backed up all {total_success} databases"
-            return True, message, result[2], result[3], database_results
+            return True, message, uploaded_files_str, total_size, database_results
         elif total_success > 0 and total_failed > 0:
             message = f"Partial success: {total_success} succeeded, {total_failed} failed out of {len(databases)} databases"
-            return False, message, result[2], result[3], database_results
+            return False, message, uploaded_files_str, total_size, database_results
         elif total_success == 0 and total_failed > 0:
             message = f"All {total_failed} databases failed to backup"
             return False, message, None, 0, database_results
@@ -298,6 +276,9 @@ def mysql_backup(server, databases, location, folder_path, schedule_types, job_i
             return False, "No databases were processed", None, 0, database_results
             
     except Exception as e:
+        print(f"💥 Critical error in mysql_backup: {e}")
+        import traceback
+        traceback.print_exc()
         cleanup_job_tmp_directory(job_tmp_dir)
         return False, str(e), None, 0, []
 
@@ -312,7 +293,8 @@ def check_database_exists(server, database):
             host=server.host,
             port=server.port,
             user=server.username,
-            password=server.password
+            password=server.password,
+            connect_timeout=10
         )
         cursor = conn.cursor()
         cursor.execute("SHOW DATABASES LIKE %s", (database,))
@@ -324,33 +306,6 @@ def check_database_exists(server, database):
         print(f"⚠️ Error checking database '{database}': {e}")
         return False
 
-
-def get_all_mysql_databases(server):
-    """
-    Connect to MySQL server and get all databases excluding system databases
-    """
-    try:
-        import mysql.connector
-        conn = mysql.connector.connect(
-            host=server.host,
-            port=server.port,
-            user=server.username,
-            password=server.password
-        )
-        cursor = conn.cursor()
-        cursor.execute("SHOW DATABASES")
-        
-        # Exclude system databases
-        excluded = ['information_schema', 'mysql', 'performance_schema', 'sys']
-        databases = [db[0] for db in cursor.fetchall() if db[0] not in excluded]
-        
-        cursor.close()
-        conn.close()
-        
-        return databases
-    except Exception as e:
-        print(f"⚠️ Error detecting databases from MySQL server: {e}")
-        return []
 
 def get_all_mysql_databases(server):
     """
@@ -410,7 +365,6 @@ def upload_backups_for_schedules(location, base_folder_path, schedule_types, bac
 
         uploaded_paths.extend([path for path in (result[2] or "").split(";") if path])
         total_size += result[3] or 0
-        apply_retention_policy(location, base_folder_path, schedule_type)
 
     return True, "Backup completed successfully", ";".join(uploaded_paths), total_size
 

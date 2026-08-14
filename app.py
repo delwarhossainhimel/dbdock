@@ -26,6 +26,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
+app.config['APP_TIMEZONE'] = 'Asia/Dhaka'
+
+
 # MySQL Configuration from Environment Variables
 MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
 MYSQL_PORT = os.getenv('MYSQL_PORT', '3306')

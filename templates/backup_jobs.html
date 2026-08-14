@@ -47,9 +47,6 @@
 </div>
 
 <!-- Jobs List -->
-
-
-
 <div id="jobsContainer">
     <div id="jobsList">
         {% for job in jobs %}
@@ -365,107 +362,162 @@
                                value="{{ form_data.folder_path if form_data else '' }}">
                     </div>
 
+                    <!-- Schedules Section -->
                     <div class="mb-3">
                         <label class="form-label">Schedules</label>
                         <div class="border rounded p-3">
+                            <!-- Master Time - Applies to all schedules -->
+                            <div class="mb-3 p-3 bg-light rounded">
+                                <label class="form-label fw-bold">⏰ Backup Time (Applies to all schedules)</label>
+                                <input type="time" class="form-control" name="master_time" id="master_time" 
+                                    value="{{ form_data.master_time if form_data else '00:00' }}" style="max-width: 200px;">
+                                <small class="text-muted">This time will be used for all enabled schedules</small>
+                            </div>
+                            
+                            <hr>
+                            
                             <!-- Daily -->
-                            <div class="form-check mb-3">
+                            <div class="form-check mb-2">
                                 <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="daily" 
-                                       id="schedule-daily" {% if form_data and 'daily' in form_data.schedule_types %}checked{% endif %}>
+                                    id="schedule-daily" {% if form_data and 'daily' in form_data.schedule_types %}checked{% endif %}>
                                 <label class="form-check-label fw-semibold" for="schedule-daily">Daily</label>
+                                <small class="text-muted d-block">Runs every day at the specified time</small>
                             </div>
                             <div class="schedule-option ps-4 pb-3" data-schedule="daily" 
-                                 style="display: {% if form_data and 'daily' in form_data.schedule_types %}block{% else %}none{% endif %};">
-                                <label class="form-label">Daily Time</label>
-                                <input type="time" class="form-control" name="daily_time" 
-                                       value="{{ form_data.daily_time if form_data else '00:00' }}">
-                                <label class="form-label mt-3">Daily Retention</label>
-                                <input type="number" class="form-control" name="daily_retention" 
-                                       min="1" value="{{ form_data.daily_retention if form_data else '1' }}">
+                                style="display: {% if form_data and 'daily' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Daily Retention</label>
+                                        <input type="number" class="form-control" name="daily_retention" 
+                                            min="1" value="{{ form_data.daily_retention if form_data else '7' }}">
+                                        <small class="text-muted">Number of daily backups to keep</small>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Example</label>
+                                        <p class="text-muted small">Keep 7 days of daily backups</p>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- Weekly -->
-                            <div class="form-check mb-3">
+                            <div class="form-check mb-2">
                                 <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="weekly" 
-                                       id="schedule-weekly" {% if form_data and 'weekly' in form_data.schedule_types %}checked{% endif %}>
+                                    id="schedule-weekly" {% if form_data and 'weekly' in form_data.schedule_types %}checked{% endif %}>
                                 <label class="form-check-label fw-semibold" for="schedule-weekly">Weekly</label>
+                                <small class="text-muted d-block">Runs on the selected day at the specified time</small>
                             </div>
                             <div class="schedule-option ps-4 pb-3" data-schedule="weekly" 
-                                 style="display: {% if form_data and 'weekly' in form_data.schedule_types %}block{% else %}none{% endif %};">
-                                <label class="form-label">Day of Week</label>
-                                <select class="form-select mb-3" name="weekly_day">
-                                    <option value="0" {% if form_data and form_data.weekly_day == '0' %}selected{% endif %}>Sunday</option>
-                                    <option value="1" {% if form_data and form_data.weekly_day == '1' %}selected{% endif %}>Monday</option>
-                                    <option value="2" {% if form_data and form_data.weekly_day == '2' %}selected{% endif %}>Tuesday</option>
-                                    <option value="3" {% if form_data and form_data.weekly_day == '3' %}selected{% endif %}>Wednesday</option>
-                                    <option value="4" {% if form_data and form_data.weekly_day == '4' %}selected{% endif %}>Thursday</option>
-                                    <option value="5" {% if form_data and form_data.weekly_day == '5' %}selected{% endif %}>Friday</option>
-                                    <option value="6" {% if form_data and form_data.weekly_day == '6' %}selected{% endif %}>Saturday</option>
-                                </select>
-                                <label class="form-label">Weekly Time</label>
-                                <input type="time" class="form-control" name="weekly_time" 
-                                       value="{{ form_data.weekly_time if form_data else '00:00' }}">
-                                <label class="form-label mt-3">Weekly Retention</label>
-                                <input type="number" class="form-control" name="weekly_retention" 
-                                       min="1" value="{{ form_data.weekly_retention if form_data else '1' }}">
+                                style="display: {% if form_data and 'weekly' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Day of Week</label>
+                                        <select class="form-select" name="weekly_day">
+                                            <option value="0" {% if form_data and form_data.weekly_day == '0' %}selected{% endif %}>Sunday</option>
+                                            <option value="1" {% if form_data and form_data.weekly_day == '1' %}selected{% endif %}>Monday</option>
+                                            <option value="2" {% if form_data and form_data.weekly_day == '2' %}selected{% endif %}>Tuesday</option>
+                                            <option value="3" {% if form_data and form_data.weekly_day == '3' %}selected{% endif %}>Wednesday</option>
+                                            <option value="4" {% if form_data and form_data.weekly_day == '4' %}selected{% endif %}>Thursday</option>
+                                            <option value="5" {% if form_data and form_data.weekly_day == '5' %}selected{% endif %}>Friday</option>
+                                            <option value="6" {% if form_data and form_data.weekly_day == '6' %}selected{% endif %}>Saturday</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Weekly Retention</label>
+                                        <input type="number" class="form-control" name="weekly_retention" 
+                                            min="1" value="{{ form_data.weekly_retention if form_data else '4' }}">
+                                        <small class="text-muted">Number of weekly backups to keep</small>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Example</label>
+                                        <p class="text-muted small">Keep 4 weeks (1 month) of weekly backups</p>
+                                    </div>
+                                </div>
+                                <small class="text-muted">The time from "Backup Time" above will be used</small>
                             </div>
 
                             <!-- Monthly -->
-                            <div class="form-check mb-3">
+                            <div class="form-check mb-2">
                                 <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="monthly" 
-                                       id="schedule-monthly" {% if form_data and 'monthly' in form_data.schedule_types %}checked{% endif %}>
+                                    id="schedule-monthly" {% if form_data and 'monthly' in form_data.schedule_types %}checked{% endif %}>
                                 <label class="form-check-label fw-semibold" for="schedule-monthly">Monthly</label>
+                                <small class="text-muted d-block">Runs on the selected day of each month at the specified time</small>
                             </div>
                             <div class="schedule-option ps-4 pb-3" data-schedule="monthly" 
-                                 style="display: {% if form_data and 'monthly' in form_data.schedule_types %}block{% else %}none{% endif %};">
-                                <label class="form-label">Day of Month</label>
-                                <input type="number" class="form-control mb-3" name="monthly_day" 
-                                       min="1" max="31" value="{{ form_data.monthly_day if form_data else '1' }}">
-                                <label class="form-label">Monthly Time</label>
-                                <input type="time" class="form-control" name="monthly_time" 
-                                       value="{{ form_data.monthly_time if form_data else '00:00' }}">
-                                <label class="form-label mt-3">Monthly Retention</label>
-                                <input type="number" class="form-control" name="monthly_retention" 
-                                       min="1" value="{{ form_data.monthly_retention if form_data else '1' }}">
+                                style="display: {% if form_data and 'monthly' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Day of Month</label>
+                                        <input type="number" class="form-control" name="monthly_day" 
+                                            min="1" max="31" value="{{ form_data.monthly_day if form_data else '1' }}">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Monthly Retention</label>
+                                        <input type="number" class="form-control" name="monthly_retention" 
+                                            min="1" value="{{ form_data.monthly_retention if form_data else '12' }}">
+                                        <small class="text-muted">Number of monthly backups to keep</small>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Example</label>
+                                        <p class="text-muted small">Keep 12 months (1 year) of monthly backups</p>
+                                    </div>
+                                </div>
+                                <small class="text-muted">The time from "Backup Time" above will be used</small>
                             </div>
 
                             <!-- Yearly -->
-                            <div class="form-check mb-3">
+                            <div class="form-check mb-2">
                                 <input class="form-check-input schedule-toggle" type="checkbox" name="schedule_types" value="yearly" 
-                                       id="schedule-yearly" {% if form_data and 'yearly' in form_data.schedule_types %}checked{% endif %}>
+                                    id="schedule-yearly" {% if form_data and 'yearly' in form_data.schedule_types %}checked{% endif %}>
                                 <label class="form-check-label fw-semibold" for="schedule-yearly">Yearly</label>
+                                <small class="text-muted d-block">Runs on the selected date each year at the specified time</small>
                             </div>
                             <div class="schedule-option ps-4" data-schedule="yearly" 
-                                 style="display: {% if form_data and 'yearly' in form_data.schedule_types %}block{% else %}none{% endif %};">
-                                <label class="form-label">Month</label>
-                                <select class="form-select mb-3" name="yearly_month">
-                                    <option value="1" {% if form_data and form_data.yearly_month == '1' %}selected{% endif %}>January</option>
-                                    <option value="2" {% if form_data and form_data.yearly_month == '2' %}selected{% endif %}>February</option>
-                                    <option value="3" {% if form_data and form_data.yearly_month == '3' %}selected{% endif %}>March</option>
-                                    <option value="4" {% if form_data and form_data.yearly_month == '4' %}selected{% endif %}>April</option>
-                                    <option value="5" {% if form_data and form_data.yearly_month == '5' %}selected{% endif %}>May</option>
-                                    <option value="6" {% if form_data and form_data.yearly_month == '6' %}selected{% endif %}>June</option>
-                                    <option value="7" {% if form_data and form_data.yearly_month == '7' %}selected{% endif %}>July</option>
-                                    <option value="8" {% if form_data and form_data.yearly_month == '8' %}selected{% endif %}>August</option>
-                                    <option value="9" {% if form_data and form_data.yearly_month == '9' %}selected{% endif %}>September</option>
-                                    <option value="10" {% if form_data and form_data.yearly_month == '10' %}selected{% endif %}>October</option>
-                                    <option value="11" {% if form_data and form_data.yearly_month == '11' %}selected{% endif %}>November</option>
-                                    <option value="12" {% if form_data and form_data.yearly_month == '12' %}selected{% endif %}>December</option>
-                                </select>
-                                <label class="form-label">Day of Month</label>
-                                <input type="number" class="form-control mb-3" name="yearly_day" 
-                                       min="1" max="31" value="{{ form_data.yearly_day if form_data else '1' }}">
-                                <label class="form-label">Yearly Time</label>
-                                <input type="time" class="form-control" name="yearly_time" 
-                                       value="{{ form_data.yearly_time if form_data else '00:00' }}">
-                                <label class="form-label mt-3">Yearly Retention</label>
-                                <input type="number" class="form-control" name="yearly_retention" 
-                                       min="1" value="{{ form_data.yearly_retention if form_data else '1' }}">
+                                style="display: {% if form_data and 'yearly' in form_data.schedule_types %}block{% else %}none{% endif %};">
+                                <div class="row">
+                                    <div class="col-md-3">
+                                        <label class="form-label">Month</label>
+                                        <select class="form-select" name="yearly_month">
+                                            <option value="1" {% if form_data and form_data.yearly_month == '1' %}selected{% endif %}>January</option>
+                                            <option value="2" {% if form_data and form_data.yearly_month == '2' %}selected{% endif %}>February</option>
+                                            <option value="3" {% if form_data and form_data.yearly_month == '3' %}selected{% endif %}>March</option>
+                                            <option value="4" {% if form_data and form_data.yearly_month == '4' %}selected{% endif %}>April</option>
+                                            <option value="5" {% if form_data and form_data.yearly_month == '5' %}selected{% endif %}>May</option>
+                                            <option value="6" {% if form_data and form_data.yearly_month == '6' %}selected{% endif %}>June</option>
+                                            <option value="7" {% if form_data and form_data.yearly_month == '7' %}selected{% endif %}>July</option>
+                                            <option value="8" {% if form_data and form_data.yearly_month == '8' %}selected{% endif %}>August</option>
+                                            <option value="9" {% if form_data and form_data.yearly_month == '9' %}selected{% endif %}>September</option>
+                                            <option value="10" {% if form_data and form_data.yearly_month == '10' %}selected{% endif %}>October</option>
+                                            <option value="11" {% if form_data and form_data.yearly_month == '11' %}selected{% endif %}>November</option>
+                                            <option value="12" {% if form_data and form_data.yearly_month == '12' %}selected{% endif %}>December</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">Day of Month</label>
+                                        <input type="number" class="form-control" name="yearly_day" 
+                                            min="1" max="31" value="{{ form_data.yearly_day if form_data else '1' }}">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">Yearly Retention</label>
+                                        <input type="number" class="form-control" name="yearly_retention" 
+                                            min="1" value="{{ form_data.yearly_retention if form_data else '5' }}">
+                                        <small class="text-muted">Number of yearly backups to keep</small>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">Example</label>
+                                        <p class="text-muted small">Keep 5 years of yearly backups</p>
+                                    </div>
+                                </div>
+                                <small class="text-muted">The time from "Backup Time" above will be used</small>
+                            </div>
+                            
+                            <div class="mt-3 text-muted">
+                                <small>💡 All schedules share the same time. Each schedule has its own retention policy.</small>
                             </div>
                         </div>
-                        <div class="form-text">You can enable one or many schedules in the same job.</div>
+                        <div class="form-text">Enable one or many schedules. All will run at the same time on their respective days.</div>
                     </div>
-                    
+
+                    <!-- Notification Email -->
                     <div class="mb-3">
                         <label class="form-label">Notification Email</label>
                         <div class="input-group">
@@ -476,9 +528,14 @@
                         <div class="form-text">Uses the SMTP settings from `.env`</div>
                     </div>
                 </div>
+                <!-- ✅ MODAL FOOTER WITH SAVE BUTTON - THIS WAS MISSING -->
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Add Job</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                        <i class="bi bi-x-circle"></i> Cancel
+                    </button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-circle"></i> Add Job
+                    </button>
                 </div>
             </form>
         </div>
