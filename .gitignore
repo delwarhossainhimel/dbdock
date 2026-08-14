@@ -209,3 +209,4 @@ __marimo__/
 backupdatabase/*
 venv/*
 .gitbackupdatabase/saas/Daily/*.sql.gz
+backupdatabase/
