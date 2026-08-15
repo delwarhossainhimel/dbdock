@@ -1,2 +1,7 @@
 .env
 instance/*.db
+tmp/*
+venv
+backupdatabase
+backup_logs/*
+docker-compose.yaml

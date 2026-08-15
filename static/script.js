@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
         });
     });
-    
+
     // Load databases when server is selected
     const serverSelect = document.getElementById('database_server');
     if (serverSelect) {

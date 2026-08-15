@@ -85,37 +85,37 @@
 
 <!-- JavaScript for delete functionality -->
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    // Test database connection
-    document.querySelectorAll('.test-connection').forEach(button => {
-        button.addEventListener('click', function() {
-            const serverId = this.dataset.serverId;
-            const button = this;
+// document.addEventListener('DOMContentLoaded', function() {
+//     // Test database connection
+//     document.querySelectorAll('.test-connection').forEach(button => {
+//         button.addEventListener('click', function() {
+//             const serverId = this.dataset.serverId;
+//             const button = this;
             
-            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Testing...';
-            button.disabled = true;
+//             button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Testing...';
+//             button.disabled = true;
             
-            fetch(`/test_connection/${serverId}`)
-                .then(response => response.json())
-                .then(data => {
-                    const alert = document.createElement('div');
-                    alert.className = `alert alert-${data.success ? 'success' : 'danger'} alert-dismissible fade show mt-2`;
-                    alert.innerHTML = `
-                        ${data.message}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                    `;
+//             fetch(`/test_connection/${serverId}`)
+//                 .then(response => response.json())
+//                 .then(data => {
+//                     const alert = document.createElement('div');
+//                     alert.className = `alert alert-${data.success ? 'success' : 'danger'} alert-dismissible fade show mt-2`;
+//                     alert.innerHTML = `
+//                         ${data.message}
+//                         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+//                     `;
                     
-                    button.closest('.card-body').appendChild(alert);
+//                     button.closest('.card-body').appendChild(alert);
                     
-                    button.innerHTML = 'Test Connection';
-                    button.disabled = false;
+//                     button.innerHTML = 'Test Connection';
+//                     button.disabled = false;
                     
-                    setTimeout(() => {
-                        alert.remove();
-                    }, 5000);
-                });
-        });
-    });
+//                     setTimeout(() => {
+//                         alert.remove();
+//                     }, 5000);
+//                 });
+//         });
+//     });
     
     // Delete server functionality
     document.querySelectorAll('.delete-server').forEach(button => {

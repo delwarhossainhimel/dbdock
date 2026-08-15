@@ -35,12 +35,12 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 # Copy project files
 COPY . .
-COPY ./default/dbDock.db /app/default/dbDock.db
-RUN chmod +x entrypoint.sh
+# COPY ./default/dbDock.db /app/default/dbDock.db
+# RUN chmod +x entrypoint.sh
 
 EXPOSE 5000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD curl -f http://localhost:5000/health || exit 1
 
-ENTRYPOINT ["sh", "/app/entrypoint.sh"]
+CMD ["python", "-m", "gunicorn", "--workers", "1", "--bind", "0.0.0.0:5000", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
