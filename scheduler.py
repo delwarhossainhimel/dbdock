@@ -10,6 +10,9 @@ from job_schedules import (
     get_schedule_entries,
     matches_schedule,
     normalize_schedule_config,
+    cron_dow_to_apscheduler,  # ← ADD THIS
+    apscheduler_dow_to_cron,  # ← ADD THIS (optional)
+    cron_dow_to_display,      # ← ADD THIS (optional)
 )
 import json
 from datetime import datetime, timedelta, timezone
@@ -416,7 +419,14 @@ def schedule_backup_job(scheduler_obj, job):
         for entry in schedule_entries:
             cron_parts = entry["cron_expression"].split()
             minute, hour, day, month, day_of_week = cron_parts
-            # DEBUG: Print the cron parts
+            # Convert day_of_week from cron format to APScheduler format
+            # Cron: 0=Sunday, 6=Saturday
+            # APScheduler: 0=Monday, 6=Sunday
+            if day_of_week != '*':
+                cron_dow = int(day_of_week)
+                aps_dow = cron_dow_to_apscheduler(cron_dow)
+                print(f"🔄 Converting day_of_week: {cron_dow} (cron) -> {aps_dow} (APScheduler)")
+                day_of_week = str(aps_dow)
             print(f"🔍 DEBUG Cron parts for {entry['type']}:")
             print(f"   minute: {minute}")
             print(f"   hour: {hour}")
@@ -446,6 +456,8 @@ def schedule_backup_job(scheduler_obj, job):
         
     except Exception as e:
         print(f"❌ Error scheduling job {job.name}: {e}")
+        import traceback
+        traceback.print_exc()
 
 def get_next_run_time(scheduler_obj, job_id):
     """Get the next run time for a job"""

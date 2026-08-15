@@ -25,6 +25,7 @@ import time
 import threading
 import uuid
 import signal
+import psutil
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -41,6 +42,11 @@ running_jobs = {}
 running_job_processes = {}
 cancellation_flags = {}
 
+# Global dictionary to track running processes
+# Key: job_id_schedule_type, Value: {'process': process, 'history_id': history_id}
+running_backup_processes = {}
+running_backup_processes_lock = threading.Lock()
+
 class TeeStream:
     def __init__(self, *streams):
         self.streams = streams
@@ -54,10 +60,61 @@ class TeeStream:
     def flush(self):
         for stream in self.streams:
             stream.flush()
+class SafeTeeStream:
+    def __init__(self, *streams):
+        self.streams = []
+        for stream in streams:
+            if stream and not getattr(stream, 'closed', True):
+                self.streams.append(stream)
+
+    def write(self, data):
+        valid_streams = []
+        for stream in self.streams:
+            try:
+                if not getattr(stream, 'closed', False):
+                    stream.write(data)
+                    stream.flush()
+                    valid_streams.append(stream)
+            except (ValueError, OSError, AttributeError):
+                # Stream is closed or invalid, skip it
+                pass
+        self.streams = valid_streams
+        return len(data)
+
+    def flush(self):
+        valid_streams = []
+        for stream in self.streams:
+            try:
+                if not getattr(stream, 'closed', False):
+                    stream.flush()
+                    valid_streams.append(stream)
+            except (ValueError, OSError, AttributeError):
+                pass
+        self.streams = valid_streams
+
+def register_backup_process(job_id, trigger_source, process, history_id):
+    """Register a running backup process for cancellation"""
+    key = f"{job_id}_{trigger_source}"
+    with running_backup_processes_lock:
+        running_backup_processes[key] = {
+            'process': process,
+            'history_id': history_id,
+            'started_at': datetime.now()
+        }
+    print(f"📝 Registered process for job {key} (PID: {process.pid})")
+
+
+def unregister_backup_process(job_id, trigger_source):
+    """Unregister a completed backup process"""
+    key = f"{job_id}_{trigger_source}"
+    with running_backup_processes_lock:
+        if key in running_backup_processes:
+            del running_backup_processes[key]
+            print(f"🧹 Unregistered process for job {key}")
 
 def cancel_backup_job(job_id, trigger_source=None):
     """
-    Cancel a running backup job
+    Cancel a running backup job by killing the actual process
     """
     from app import app
     
@@ -71,11 +128,7 @@ def cancel_backup_job(job_id, trigger_source=None):
         else:
             key = str(job_id)
         
-        # Set cancellation flag
-        cancellation_flags[key] = True
-        print(f"🛑 Cancellation requested for job {key}")
-        
-        # Find the running history record
+        # Find the running history record FIRST
         query = BackupHistory.query.filter(
             BackupHistory.backup_job_id == job_id,
             BackupHistory.status == 'running'
@@ -85,19 +138,154 @@ def cancel_backup_job(job_id, trigger_source=None):
         
         history = query.order_by(BackupHistory.start_time.desc()).first()
         
-        if history:
-            history.status = 'cancelled'
-            history.is_cancelled = True
-            history.cancelled_at = datetime.now()
-            history.cancelled_by = 'User'
-            history.message = 'Job cancelled by user'
-            db.session.commit()
-            
-            print(f"✅ Job {job_id} ({trigger_source}) marked as cancelled")
-            return True
+        if not history:
+            print(f"❌ No running history found for job {job_id}")
+            return False
         
-        return False
-
+        # Check if there's a running process
+        process_info = None
+        with running_backup_processes_lock:
+            # Try exact match first
+            if key in running_backup_processes:
+                process_info = running_backup_processes[key]
+            else:
+                # Try to find by job_id only (any schedule type)
+                for k, v in running_backup_processes.items():
+                    if k.startswith(f"{job_id}_"):
+                        process_info = v
+                        key = k
+                        break
+        
+        # Kill the process if found
+        if process_info and process_info.get('process'):
+            try:
+                process = process_info['process']
+                pid = process.pid
+                
+                print(f"🛑 Attempting to kill process PID: {pid} for job {key}")
+                
+                # Kill the entire process tree
+                try:
+                    import psutil
+                    parent = psutil.Process(pid)
+                    children = parent.children(recursive=True)
+                    
+                    # Kill children first (mysqldump/pg_dump processes)
+                    for child in children:
+                        try:
+                            print(f"   Killing child process PID: {child.pid}")
+                            child.kill()
+                        except Exception as e:
+                            print(f"   ⚠️ Error killing child {child.pid}: {e}")
+                    
+                    # Kill parent process
+                    parent.kill()
+                    print(f"✅ Killed process PID: {pid}")
+                    
+                except ImportError:
+                    # Fallback if psutil not installed
+                    import signal
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    print(f"✅ Killed process group PID: {pid}")
+                    
+                except psutil.NoSuchProcess:
+                    print(f"⚠️ Process {pid} no longer exists")
+                except Exception as e:
+                    print(f"⚠️ Error killing process tree: {e}")
+                
+                # Update the history record to CANCELLED
+                history.status = 'cancelled'
+                history.is_cancelled = True
+                history.cancelled_at = datetime.now()
+                history.cancelled_by = 'User'
+                history.message = 'Job cancelled by user (process killed)'
+                db.session.commit()
+                print(f"✅ Job {key} marked as CANCELLED in database")
+                
+                # Clean up the process info
+                with running_backup_processes_lock:
+                    if key in running_backup_processes:
+                        del running_backup_processes[key]
+                
+                return True
+                
+            except Exception as e:
+                print(f"❌ Error killing process: {e}")
+                # Still mark as cancelled even if process kill fails
+                history.status = 'cancelled'
+                history.is_cancelled = True
+                history.cancelled_at = datetime.now()
+                history.cancelled_by = 'User'
+                history.message = f'Job cancelled by user (process kill failed: {str(e)})'
+                db.session.commit()
+                return True
+        
+        # If no process found, still mark as cancelled
+        history.status = 'cancelled'
+        history.is_cancelled = True
+        history.cancelled_at = datetime.now()
+        history.cancelled_by = 'User'
+        history.message = 'Job cancelled by user (no process found)'
+        db.session.commit()
+        print(f"✅ Job {key} marked as CANCELLED in database (no process found)")
+        
+        # Clean up process info if exists
+        with running_backup_processes_lock:
+            if key in running_backup_processes:
+                del running_backup_processes[key]
+        
+        return True
+    
+def cleanup_stuck_jobs(max_hours=48):
+    """
+    Clean up jobs that have been running for too long.
+    Default: 48 hours (configurable)
+    """
+    from app import app
+    from datetime import datetime, timedelta
+    
+    with app.app_context():
+        from models import BackupHistory, db
+        
+        # Use environment variable or default to 48 hours
+        timeout_hours = int(os.getenv('JOB_TIMEOUT_HOURS', max_hours))
+        timeout = datetime.now() - timedelta(hours=timeout_hours)
+        
+        print(f"🧹 Running cleanup for jobs older than {timeout_hours} hours")
+        
+        stuck_jobs = BackupHistory.query.filter(
+            BackupHistory.status == 'running',
+            BackupHistory.start_time < timeout
+        ).all()
+        
+        if not stuck_jobs:
+            print("   No stuck jobs found")
+            return
+        
+        for job in stuck_jobs:
+            duration = (datetime.now() - job.start_time).total_seconds() / 3600
+            print(f"🔄 Cleaning up stuck job: {job.id} (running for {duration:.1f} hours, started at {job.start_time})")
+            
+            # Kill the process if still running
+            key = f"{job.backup_job_id}_{job.trigger_source}"
+            with running_backup_processes_lock:
+                if key in running_backup_processes:
+                    try:
+                        process = running_backup_processes[key]['process']
+                        process.kill()
+                        print(f"   ✅ Killed stuck process PID: {process.pid}")
+                    except Exception as e:
+                        print(f"   ⚠️ Error killing process: {e}")
+                    # Always remove from tracking
+                    del running_backup_processes[key]
+                else:
+                    print(f"   ⚠️ No process found for job {key}")
+            
+            job.status = 'failed'
+            job.end_time = datetime.now()
+            job.message = f"Job timed out after {timeout_hours} hours. Started at {job.start_time}"
+            db.session.commit()
+            print(f"   ✅ Updated job {job.id} status to 'failed'")
 
 def is_job_cancelled(job_id, trigger_source):
     """
@@ -348,7 +536,7 @@ def determine_run_targets(job, trigger_source):
 
 def run_backup_job(job_id, trigger_source='manual'):
     """
-    Run backup job with cancellation support
+    Run backup job with cancellation support and timeout checking
     """
     key = f"{job_id}_{trigger_source}"
     
@@ -383,6 +571,19 @@ def run_backup_job(job_id, trigger_source='manual'):
             # Check if cancelled before starting
             if is_job_cancelled(job_id, trigger_source):
                 print(f"🛑 Job {job_id} ({trigger_source}) was cancelled before starting")
+                # Update history to cancelled
+                history = BackupHistory.query.filter(
+                    BackupHistory.backup_job_id == job_id,
+                    BackupHistory.status == 'running'
+                ).order_by(BackupHistory.start_time.desc()).first()
+                
+                if history:
+                    history.status = 'cancelled'
+                    history.is_cancelled = True
+                    history.cancelled_at = datetime.now()
+                    history.message = 'Job cancelled by user before execution'
+                    db.session.commit()
+                
                 clear_cancellation_flag(job_id, trigger_source)
                 return
             
@@ -464,11 +665,11 @@ def run_backup_job(job_id, trigger_source='manual'):
                     print(f"⚠️ Error opening log file: {e}")
                 
                 if log_file:
-                    tee_stdout = TeeStream(sys.stdout, log_file)
-                    tee_stderr = TeeStream(sys.stderr, log_file)
+                    tee_stdout = SafeTeeStream(sys.stdout, log_file)
+                    tee_stderr = SafeTeeStream(sys.stderr, log_file)
                 else:
-                    tee_stdout = TeeStream(sys.stdout)
-                    tee_stderr = TeeStream(sys.stderr)
+                    tee_stdout = SafeTeeStream(sys.stdout)
+                    tee_stderr = SafeTeeStream(sys.stderr)
                 
                 with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
                     print(f"\n{'='*80}")
@@ -477,6 +678,7 @@ def run_backup_job(job_id, trigger_source='manual'):
                     print(f"   Job: {job.name} (ID: {job.id})")
                     print(f"   Schedule Type: {trigger_source}")
                     print(f"   Log file: {log_path}")
+                    print(f"   Timeout: {os.getenv('JOB_TIMEOUT_HOURS', 48)} hours")
                     print(f"{'='*80}\n")
                     
                     print(f"📊 Backup details:")
@@ -558,6 +760,13 @@ def run_backup_job(job_id, trigger_source='manual'):
                     history.is_cancelled = True
                     history.cancelled_at = datetime.now()
                     history.message = 'Job cancelled by user'
+                    print(f"🛑 Backup cancelled: {job.name} ({trigger_source})")
+                else:
+                    history.status = 'failed'
+                    message = f"Unexpected error: {str(e)}"
+                    history.message = message
+                    print(f"❌ Backup failed: {job.name} ({trigger_source})")
+
                 
                 try:
                     with open(log_path, 'a', encoding='utf-8') as log_file:

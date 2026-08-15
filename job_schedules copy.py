@@ -2,36 +2,6 @@ import json
 
 SCHEDULE_TYPES = ("daily", "weekly", "monthly", "yearly")
 
-# Add these functions at the top of job_schedules.py
-
-def cron_dow_to_apscheduler(cron_dow):
-    """
-    Convert standard cron day_of_week (0=Sunday..6=Saturday)
-    to APScheduler day_of_week (0=Monday..6=Sunday)
-    """
-    return (cron_dow - 1) % 7
-
-def apscheduler_dow_to_cron(aps_dow):
-    """
-    Convert APScheduler day_of_week (0=Monday..6=Sunday)
-    to standard cron day_of_week (0=Sunday..6=Saturday)
-    """
-    return (aps_dow + 1) % 7
-
-def cron_dow_to_display(cron_dow):
-    """
-    Convert cron day_of_week to display name
-    """
-    day_names = {
-        0: "Sunday",
-        1: "Monday",
-        2: "Tuesday",
-        3: "Wednesday",
-        4: "Thursday",
-        5: "Friday",
-        6: "Saturday",
-    }
-    return day_names.get(cron_dow, "Unknown")
 
 def default_schedule_config():
     return {
@@ -182,20 +152,6 @@ def get_primary_schedule_type(config):
     return enabled_types[0] if enabled_types else None
 
 
-# def get_cron_expression(schedule_type, details):
-#     time_value = details.get("time", "00:00")
-#     hour, minute = parse_time(time_value)
-
-#     if schedule_type == "daily":
-#         return f"{minute} {hour} * * *"
-#     if schedule_type == "weekly":
-#         return f"{minute} {hour} * * {details.get('day', '0')}"
-#     if schedule_type == "monthly":
-#         return f"{minute} {hour} {details.get('day', '1')} * *"
-#     if schedule_type == "yearly":
-#         return f"{minute} {hour} {details.get('day', '1')} {details.get('month', '1')} *"
-#     return None
-
 def get_cron_expression(schedule_type, details):
     time_value = details.get("time", "00:00")
     hour, minute = parse_time(time_value)
@@ -203,15 +159,13 @@ def get_cron_expression(schedule_type, details):
     if schedule_type == "daily":
         return f"{minute} {hour} * * *"
     if schedule_type == "weekly":
-        # The day stored in details is in cron format (0=Sunday)
-        # We use it directly in the cron expression (standard cron)
-        day = details.get('day', '0')
-        return f"{minute} {hour} * * {day}"
+        return f"{minute} {hour} * * {details.get('day', '0')}"
     if schedule_type == "monthly":
         return f"{minute} {hour} {details.get('day', '1')} * *"
     if schedule_type == "yearly":
         return f"{minute} {hour} {details.get('day', '1')} {details.get('month', '1')} *"
     return None
+
 
 def get_schedule_entries(config):
     normalized = normalize_schedule_config(config)
@@ -238,10 +192,16 @@ def format_schedule_entry(schedule_type, details):
     if schedule_type == "daily":
         return f"Daily at {time_value} | keep {retention} day(s)"
     if schedule_type == "weekly":
-        # The day is stored in cron format (0=Sunday)
-        cron_day = details.get('day', '0')
-        day_name = cron_dow_to_display(int(cron_day))
-        return f"Weekly on {day_name} at {time_value} | keep {retention} week(s)"
+        weekday_names = {
+            "0": "Sunday",
+            "1": "Monday",
+            "2": "Tuesday",
+            "3": "Wednesday",
+            "4": "Thursday",
+            "5": "Friday",
+            "6": "Saturday",
+        }
+        return f"Weekly on {weekday_names.get(details.get('day', '0'), 'Sunday')} at {time_value} | keep {retention} week(s)"
     if schedule_type == "monthly":
         return f"Monthly on day {details.get('day', '1')} at {time_value} | keep {retention} month(s)"
     if schedule_type == "yearly":
@@ -276,21 +236,18 @@ def matches_schedule(schedule_type, details, dt):
         return True
     
     if schedule_type == "weekly":
-        # Get the day in cron format (0=Sunday)
-        schedule_day_cron = int(details.get("day", "0"))
-        # Convert to APScheduler format (0=Monday)
-        schedule_day_aps = cron_dow_to_apscheduler(schedule_day_cron)
-        
-        # Python weekday (0=Monday, 6=Sunday) - same as APScheduler
+        schedule_day = int(details.get("day", "0"))
         python_weekday = dt.weekday()
+        cron_weekday = (python_weekday + 1) % 7
         
+        # DEBUG: Print what's happening
         print(f"🔍 DEBUG matches_schedule:")
-        print(f"   schedule_day (cron): {schedule_day_cron} ({cron_dow_to_display(schedule_day_cron)})")
-        print(f"   schedule_day (APS): {schedule_day_aps}")
-        print(f"   python_weekday: {python_weekday}")
-        print(f"   Match: {python_weekday == schedule_day_aps}")
+        print(f"   schedule_day: {schedule_day} ({['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][schedule_day]})")
+        print(f"   python_weekday: {python_weekday} ({['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][python_weekday]})")
+        print(f"   cron_weekday: {cron_weekday} ({['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][cron_weekday]})")
+        print(f"   Match: {cron_weekday == schedule_day}")
         
-        return python_weekday == schedule_day_aps
+        return cron_weekday == schedule_day
     
     if schedule_type == "monthly":
         return dt.day == int(details.get("day", "1"))
