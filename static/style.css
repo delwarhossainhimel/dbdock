@@ -163,6 +163,19 @@ button {
     color: var(--warning-text);
 }
 
+/* Cancelled status */
+.status-cancelled {
+    background-color: #e9ecef;
+    color: #6c757d;
+}
+
+/* Or if you want a different color */
+.status-cancelled {
+    background-color: #f8f9fa;
+    color: #495057;
+    border: 1px solid #dee2e6;
+}
+
 .status-inactive {
     background-color: #e9eef5;
     color: #5b697d;

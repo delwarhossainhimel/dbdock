@@ -195,15 +195,9 @@
                                 <div class="backup-details">
                                     <div class="d-flex justify-content-between mb-1">
                                         <span class="text-muted">Status</span>
-                                        {% if job.latest_history.status == 'success' %}
-                                        <span class="badge bg-success">{{ job.latest_history.status|capitalize }}</span>
-                                        {% elif job.latest_history.status == 'failed' %}
-                                        <span class="badge bg-danger">{{ job.latest_history.status|capitalize }}</span>
-                                        {% elif job.latest_history.status == 'cancelled' %}
-                                        <span class="badge bg-secondary">{{ job.latest_history.status|capitalize }}</span>
-                                        {% elif job.latest_history.status == 'running' %}
-                                        <span class="badge bg-warning">{{ job.latest_history.status|capitalize }}</span>
-                                        {% endif %}
+                                        <span class="badge bg-{{ 'success' if job.latest_history.status == 'success' else 'danger' if job.latest_history.status == 'failed' else 'warning' }}">
+                                            {{ job.latest_history.status|capitalize }}
+                                        </span>
                                     </div>
                                     <div class="d-flex justify-content-between mb-1">
                                         <span class="text-muted">Started</span>

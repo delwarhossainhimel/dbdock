@@ -11,7 +11,6 @@ from job_schedules import (
     matches_schedule,
     normalize_schedule_config,
 )
-from log_rotation import rotate_log, cleanup_old_rotated_logs
 import json
 from datetime import datetime, timedelta, timezone
 import atexit
@@ -25,60 +24,108 @@ import sys
 import time
 import threading
 import uuid
+import signal
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
-from pathlib import Path
+from log_rotation import rotate_log, cleanup_old_rotated_logs
+
 
 # Global variable to track if scheduler is already running
 scheduler = None
 scheduler_lock_file = None
 SCHEDULER_LOCK_PATH = '/tmp/backup_scheduler.lock'
 BACKUP_LOG_DIR = 'backup_logs'
+# Store running job processes for cancellation
+running_jobs = {}
+running_job_processes = {}
+cancellation_flags = {}
 
-
-class SafeTeeStream:
-    """
-    A thread-safe TeeStream that handles closed files gracefully
-    """
+class TeeStream:
     def __init__(self, *streams):
-        self.streams = []
-        for stream in streams:
-            if stream and not getattr(stream, 'closed', True):
-                self.streams.append(stream)
+        self.streams = streams
 
     def write(self, data):
-        valid_streams = []
         for stream in self.streams:
-            try:
-                if not getattr(stream, 'closed', False):
-                    stream.write(data)
-                    stream.flush()
-                    valid_streams.append(stream)
-            except (ValueError, OSError, AttributeError):
-                pass
-        self.streams = valid_streams
+            stream.write(data)
+            stream.flush()
         return len(data)
 
     def flush(self):
-        valid_streams = []
         for stream in self.streams:
-            try:
-                if not getattr(stream, 'closed', False):
-                    stream.flush()
-                    valid_streams.append(stream)
-            except (ValueError, OSError, AttributeError):
-                pass
-        self.streams = valid_streams
+            stream.flush()
 
+def cancel_backup_job(job_id, trigger_source=None):
+    """
+    Cancel a running backup job
+    """
+    from app import app
+    
+    with app.app_context():
+        from models import BackupHistory, db
+        from datetime import datetime
+        
+        # Build the key
+        if trigger_source:
+            key = f"{job_id}_{trigger_source}"
+        else:
+            key = str(job_id)
+        
+        # Set cancellation flag
+        cancellation_flags[key] = True
+        print(f"🛑 Cancellation requested for job {key}")
+        
+        # Find the running history record
+        query = BackupHistory.query.filter(
+            BackupHistory.backup_job_id == job_id,
+            BackupHistory.status == 'running'
+        )
+        if trigger_source:
+            query = query.filter(BackupHistory.trigger_source == trigger_source)
+        
+        history = query.order_by(BackupHistory.start_time.desc()).first()
+        
+        if history:
+            history.status = 'cancelled'
+            history.is_cancelled = True
+            history.cancelled_at = datetime.now()
+            history.cancelled_by = 'User'
+            history.message = 'Job cancelled by user'
+            db.session.commit()
+            
+            print(f"✅ Job {job_id} ({trigger_source}) marked as cancelled")
+            return True
+        
+        return False
+
+
+def is_job_cancelled(job_id, trigger_source):
+    """
+    Check if a job has been cancelled
+    """
+    key = f"{job_id}_{trigger_source}"
+    return cancellation_flags.get(key, False)
+
+
+def clear_cancellation_flag(job_id, trigger_source):
+    """
+    Clear the cancellation flag after a job finishes
+    """
+    key = f"{job_id}_{trigger_source}"
+    if key in cancellation_flags:
+        del cancellation_flags[key]
+        print(f"🧹 Cleared cancellation flag for {key}")
 
 def init_scheduler(app):
     global scheduler, scheduler_lock_file
-    
+    timezone = app.config.get('APP_TIMEZONE', 'Asia/Dhaka')
+
+    # Prevent multiple scheduler instances
     if scheduler and scheduler.running:
         print("✅ Scheduler is already running")
         return scheduler
     
+    # Create a lock file to prevent multiple instances
     try:
         scheduler_lock_file = open(SCHEDULER_LOCK_PATH, 'w')
         fcntl.flock(scheduler_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -91,24 +138,33 @@ def init_scheduler(app):
         return None
     
     try:
-        jobstores = {'default': MemoryJobStore()}
-        executors = {'default': ThreadPoolExecutor(5)}
+        # Configure job stores and executors
+        jobstores = {
+            'default': MemoryJobStore()
+        }
+        executors = {
+            'default': ThreadPoolExecutor(5)
+        }
         job_defaults = {
-            'coalesce': True,
-            'max_instances': 1,
-            'misfire_grace_time': 300
+            'coalesce': True,  # Combine multiple pending executions
+            'max_instances': 1,  # Only one instance of a job can run at a time
+            'misfire_grace_time': 300  # 5 minutes grace period
         }
         
+        # Initialize scheduler
         scheduler = APScheduler(BackgroundScheduler(
             jobstores=jobstores,
             executors=executors,
             job_defaults=job_defaults,
-            timezone='UTC'
+            timezone='Asia/Dhaka'
         ))
         
         scheduler.init_app(app)
+        
+        # Register shutdown handler
         atexit.register(shutdown_scheduler)
         
+        # Start scheduler
         if not scheduler.running:
             scheduler.start()
             print("✅ Scheduler started successfully")
@@ -122,7 +178,6 @@ def init_scheduler(app):
         shutdown_scheduler()
         return None
 
-
 def shutdown_scheduler():
     global scheduler, scheduler_lock_file
     if scheduler:
@@ -130,19 +185,23 @@ def shutdown_scheduler():
             if scheduler.running:
                 scheduler.shutdown()
                 print("🛑 Scheduler shut down")
-        except Exception:
-            pass
-
+            else:
+                print("ℹ️  Scheduler was not running, no need to shut down")
+        except Exception as e:
+            print(f"⚠️ Error shutting down scheduler: {e}")
+    
     if scheduler_lock_file:
         try:
+            # Only try to unlock if the file is still open
             if not scheduler_lock_file.closed:
                 fcntl.flock(scheduler_lock_file, fcntl.LOCK_UN)
                 scheduler_lock_file.close()
+            # Clean up the lock file
             if os.path.exists(SCHEDULER_LOCK_PATH):
                 os.unlink(SCHEDULER_LOCK_PATH)
-        except Exception:
+        except Exception as e:
+            # It's okay if the file is already closed or doesn't exist
             pass
-
 
 def schedule_backup_job(scheduler_obj, job):
     """Schedule a backup job with proper configuration"""
@@ -169,12 +228,17 @@ def schedule_backup_job(scheduler_obj, job):
         for entry in schedule_entries:
             cron_parts = entry["cron_expression"].split()
             minute, hour, day, month, day_of_week = cron_parts
-            schedule_type = entry["type"]
-
+            # DEBUG: Print the cron parts
+            print(f"🔍 DEBUG Cron parts for {entry['type']}:")
+            print(f"   minute: {minute}")
+            print(f"   hour: {hour}")
+            print(f"   day: {day}")
+            print(f"   month: {month}")
+            print(f"   day_of_week: {day_of_week}")
             scheduler_obj.add_job(
-                id=get_schedule_job_id(job.id, schedule_type),
+                id=get_schedule_job_id(job.id, entry["type"]),
                 func=run_backup_job,
-                args=[job.id, schedule_type],  # Pass schedule_type as trigger
+                args=[job.id, entry["type"]],
                 trigger='cron',
                 minute=minute,
                 hour=hour,
@@ -195,7 +259,6 @@ def schedule_backup_job(scheduler_obj, job):
     except Exception as e:
         print(f"❌ Error scheduling job {job.name}: {e}")
 
-
 def get_next_run_time(scheduler_obj, job_id):
     """Get the next run time for a job"""
     try:
@@ -204,15 +267,22 @@ def get_next_run_time(scheduler_obj, job_id):
             if scheduled_job.id.startswith(f'backup_job_{job_id}_'):
                 if hasattr(scheduled_job, 'next_run_time') and scheduled_job.next_run_time:
                     schedule_type = scheduled_job.id.replace(f'backup_job_{job_id}_', '')
+                    next_time = scheduled_job.next_run_time
+                    
+                    # Convert to local timezone if needed
+                    if next_time.tzinfo is None:
+                        import pytz
+                        local_tz = pytz.timezone('Asia/Dhaka')
+                        next_time = local_tz.localize(next_time)
+                    
                     next_runs.append(
                         f"{schedule_type.capitalize()}: "
-                        f"{scheduled_job.next_run_time.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                        f"{next_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
                     )
 
         return next_runs or ["Calculating..."]
     except Exception as e:
         return f"Error: {str(e)}"
-
 
 def unschedule_backup_job(scheduler_obj, job_id):
     """Remove a backup job from the scheduler"""
@@ -224,64 +294,72 @@ def unschedule_backup_job(scheduler_obj, job_id):
             if scheduled_job.id.startswith(f'backup_job_{job_id}_'):
                 scheduler_obj.remove_job(scheduled_job.id)
                 print(f"✅ Unscheduled job: {scheduled_job.id}")
-    except Exception:
+    except Exception as e:
+        # Job might not exist, which is fine
         pass
-
 
 def get_schedule_job_id(job_id, schedule_type):
     return f'backup_job_{job_id}_{schedule_type}'
 
-
 def enqueue_immediate_backup_job(scheduler_obj, job_id):
-    """Queue an immediate backup job for all schedules"""
     if scheduler_obj and scheduler_obj.running:
-        # Get the job to determine which schedule types are enabled
-        from app import app
-        with app.app_context():
-            from models import BackupJob
-            job = BackupJob.query.get(job_id)
-            if job:
-                schedule_config = normalize_schedule_config(
-                    job.schedule_config,
-                    job.schedule_type,
-                    job.cron_expression,
-                    fallback_retention=job.retention_policy,
-                )
-                schedule_entries = get_schedule_entries(schedule_config)
-                schedule_types = [entry['type'] for entry in schedule_entries] or ['manual']
-            else:
-                schedule_types = ['manual']
-        
-        # Create separate jobs for each schedule type
-        for schedule_type in schedule_types:
-            scheduler_obj.add_job(
-                id=f'immediate_backup_job_{job_id}_{schedule_type}_{uuid.uuid4().hex[:8]}',
-                func=run_backup_job,
-                args=[job_id, schedule_type],
-                trigger='date',
-                run_date=datetime.now(timezone.utc),
-                replace_existing=False
-            )
+        scheduler_obj.add_job(
+            id=f'immediate_backup_job_{job_id}_{uuid.uuid4().hex}',
+            func=run_backup_job,
+            args=[job_id, 'manual'],
+            trigger='date',
+            run_date=datetime.now(timezone.utc),
+            replace_existing=False
+        )
         return True
 
-    # Fallback: run in thread
     threading.Thread(target=run_backup_job, args=(job_id, 'manual'), daemon=True).start()
     return True
 
+def determine_run_targets(job, trigger_source):
+    schedule_config = normalize_schedule_config(
+        job.schedule_config,
+        job.schedule_type,
+        job.cron_expression,
+        fallback_retention=job.retention_policy,
+    )
+    enabled_schedule_types = get_enabled_schedule_types(schedule_config)
 
-def get_job_lock_name(job_id, schedule_type):
-    """Get lock name for a specific job and schedule type"""
-    return f"backup_job_{job_id}_{schedule_type}.lock"
+    if trigger_source == 'manual':
+        return enabled_schedule_types or ['manual']
 
+    if trigger_source in enabled_schedule_types:
+        # Use local time from the scheduler
+        from datetime import datetime
+        import pytz
+        local_tz = pytz.timezone('Asia/Dhaka')
+        current_time = datetime.now(local_tz)
+        
+        matched_types = [
+            schedule_type
+            for schedule_type in enabled_schedule_types
+            if matches_schedule(schedule_type, schedule_config[schedule_type], current_time)
+        ]
+        if trigger_source not in matched_types:
+            matched_types.insert(0, trigger_source)
+        return matched_types
+
+    return enabled_schedule_types or ['manual']
 
 def run_backup_job(job_id, trigger_source='manual'):
     """
-    Run backup job with schedule-type specific locking and trigger_source tracking
+    Run backup job with cancellation support
     """
+    key = f"{job_id}_{trigger_source}"
+    
     print(f"🔹 Starting backup job ID: {job_id} (trigger: {trigger_source})")
     
-    # Create a lock file for this specific job and schedule type
-    lock_file = f"/tmp/{get_job_lock_name(job_id, trigger_source)}"
+    # Clear any previous cancellation flag
+    if key in cancellation_flags:
+        del cancellation_flags[key]
+    
+    # Create a lock file for this specific job
+    lock_file = f"/tmp/backup_job_{job_id}.lock"
     lock_fd = None
     
     try:
@@ -290,10 +368,10 @@ def run_backup_job(job_id, trigger_source='manual'):
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         
     except IOError:
-        print(f"⏸️ Job {job_id} ({trigger_source}) is already running, skipping...")
+        print(f"⏸️ Job {job_id} is already running, skipping...")
         return
     except Exception as e:
-        print(f"❌ Error acquiring lock for job {job_id} ({trigger_source}): {e}")
+        print(f"❌ Error acquiring lock for job {job_id}: {e}")
         return
     
     try:
@@ -302,36 +380,41 @@ def run_backup_job(job_id, trigger_source='manual'):
         with app.app_context():
             from models import BackupJob, DatabaseServer, StorageLocation, BackupHistory, db
             
+            # Check if cancelled before starting
+            if is_job_cancelled(job_id, trigger_source):
+                print(f"🛑 Job {job_id} ({trigger_source}) was cancelled before starting")
+                clear_cancellation_flag(job_id, trigger_source)
+                return
+            
             job = BackupJob.query.get(job_id)
             if not job or not job.is_active:
                 print(f"❌ Job {job_id} not found or inactive")
                 return
             
-            # Check if there's already a running instance of this schedule type
+            # Check if there's already a running instance of this job in the database
             running_job = BackupHistory.query.filter(
                 BackupHistory.backup_job_id == job.id,
                 BackupHistory.status == 'running',
-                BackupHistory.trigger_source == trigger_source,
                 BackupHistory.start_time > datetime.now() - timedelta(hours=1)
             ).first()
             
             if running_job:
-                print(f"⏸️ Job {job.name} ({trigger_source}) is already running (started at {running_job.start_time}), skipping...")
+                print(f"⏸️ Job {job.name} is already running (started at {running_job.start_time}), skipping...")
                 return
 
-            # Determine which schedule types to run
             schedule_targets = determine_run_targets(job, trigger_source)
 
             print(f"🚀 Starting backup: {job.name}")
             print(f"   - Trigger source: {trigger_source}")
             print(f"   - Target schedules: {schedule_targets}")
             
-            # Create backup history record with trigger source
+            # Create backup history record
             history = BackupHistory(
                 backup_job_id=job.id,
                 start_time=datetime.now(),
                 status='running',
-                trigger_source=trigger_source  # Store the schedule type
+                trigger_source=trigger_source,
+                is_cancelled=False
             )
             db.session.add(history)
             db.session.commit()
@@ -364,6 +447,16 @@ def run_backup_job(job_id, trigger_source='manual'):
                 location = job.storage_location
                 databases = json.loads(job.databases)
                 
+                # Check if cancelled
+                if is_job_cancelled(job_id, trigger_source):
+                    print(f"🛑 Job {job_id} ({trigger_source}) cancelled during initialization")
+                    history.status = 'cancelled'
+                    history.is_cancelled = True
+                    history.cancelled_at = datetime.now()
+                    history.message = 'Job cancelled by user'
+                    db.session.commit()
+                    return
+                
                 log_file = None
                 try:
                     log_file = open(log_path, 'a', encoding='utf-8')
@@ -371,11 +464,11 @@ def run_backup_job(job_id, trigger_source='manual'):
                     print(f"⚠️ Error opening log file: {e}")
                 
                 if log_file:
-                    tee_stdout = SafeTeeStream(sys.stdout, log_file)
-                    tee_stderr = SafeTeeStream(sys.stderr, log_file)
+                    tee_stdout = TeeStream(sys.stdout, log_file)
+                    tee_stderr = TeeStream(sys.stderr, log_file)
                 else:
-                    tee_stdout = SafeTeeStream(sys.stdout)
-                    tee_stderr = SafeTeeStream(sys.stderr)
+                    tee_stdout = TeeStream(sys.stdout)
+                    tee_stderr = TeeStream(sys.stderr)
                 
                 with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
                     print(f"\n{'='*80}")
@@ -393,21 +486,27 @@ def run_backup_job(job_id, trigger_source='manual'):
                     print(f"   - Schedule config: {schedule_targets}")
                     print(f"   - Folder: {job.folder_path}")
                     
-                    # Run backup based on database type
-                    if server.type.value == 'mysql':
-                        success, message, file_path, file_size, database_results = mysql_backup(
-                            server, databases, location, job.folder_path, schedule_targets, job.id
-                        )
-                    elif server.type.value == 'postgres':
-                        success, message, file_path, file_size, database_results = postgres_backup(
-                            server, databases, location, job.folder_path, schedule_targets, job.id
-                        )
+                    # Check if cancelled before backup
+                    if is_job_cancelled(job_id, trigger_source):
+                        print(f"🛑 Job {job_id} ({trigger_source}) cancelled before backup execution")
+                        success = False
+                        message = "Job cancelled by user"
                     else:
-                        success, message, file_path, file_size, database_results = False, "Unsupported database type", None, 0, []
+                        # Run backup based on database type
+                        if server.type.value == 'mysql':
+                            success, message, file_path, file_size, database_results = mysql_backup(
+                                server, databases, location, job.folder_path, schedule_targets, job.id, trigger_source
+                            )
+                        elif server.type.value == 'postgres':
+                            success, message, file_path, file_size, database_results = postgres_backup(
+                                server, databases, location, job.folder_path, schedule_targets, job.id, trigger_source
+                            )
+                        else:
+                            success, message, file_path, file_size, database_results = False, "Unsupported database type", None, 0, []
                     
                     print(f"\n{'='*80}")
                     print(f"🏁 BACKUP RUN COMPLETED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    print(f"   Status: {'SUCCESS' if success else 'FAILED'}")
+                    print(f"   Status: {'SUCCESS' if success else 'FAILED' if not is_job_cancelled(job_id, trigger_source) else 'CANCELLED'}")
                     print(f"   Message: {message}")
                     print(f"   Duration: {(datetime.now() - history.start_time).total_seconds():.2f} seconds")
                     print(f"{'='*80}\n")
@@ -417,15 +516,27 @@ def run_backup_job(job_id, trigger_source='manual'):
                 
                 # Update history record
                 history.end_time = datetime.now()
-                history.status = 'success' if success else 'failed'
-                history.message = message  # Use the full message from the backup script
+                
+                # Check if cancelled during execution
+                if is_job_cancelled(job_id, trigger_source):
+                    history.status = 'cancelled'
+                    history.is_cancelled = True
+                    history.cancelled_at = datetime.now()
+                    history.message = 'Job cancelled by user'
+                    success = False
+                else:
+                    history.status = 'success' if success else 'failed'
+                    history.message = message
+                
                 history.file_path = file_path
                 history.file_size = file_size
                 history.trigger_source = trigger_source
                 
                 duration = (history.end_time - history.start_time).total_seconds()
                 
-                if success:
+                if history.status == 'cancelled':
+                    print(f"🛑 Backup cancelled: {job.name} ({trigger_source})")
+                elif success:
                     print(f"✅ Backup completed successfully: {job.name} ({trigger_source})")
                     print(f"   - Duration: {duration:.2f} seconds")
                     print(f"   - File size: {file_size} bytes")
@@ -441,6 +552,13 @@ def run_backup_job(job_id, trigger_source='manual'):
                 history.message = message
                 history.trigger_source = trigger_source
                 
+                # Check if it was cancelled
+                if is_job_cancelled(job_id, trigger_source):
+                    history.status = 'cancelled'
+                    history.is_cancelled = True
+                    history.cancelled_at = datetime.now()
+                    history.message = 'Job cancelled by user'
+                
                 try:
                     with open(log_path, 'a', encoding='utf-8') as log_file:
                         print(f"💥 Unexpected error in backup job {job.name}: {e}", file=log_file)
@@ -455,13 +573,20 @@ def run_backup_job(job_id, trigger_source='manual'):
             
             db.session.commit()
 
-            if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
-                send_notification_email(job, history, schedule_targets, success, message, database_results)
+            # Clear cancellation flag
+            clear_cancellation_flag(job_id, trigger_source)
+
+            # Send notification only if not cancelled
+            if history.status != 'cancelled':
+                if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
+                    send_notification_email(job, history, schedule_targets, success, message, database_results)
             
     except Exception as e:
         print(f"💥 Critical error in run_backup_job for job {job_id} ({trigger_source}): {e}")
         import traceback
         traceback.print_exc()
+        # Clear cancellation flag on error too
+        clear_cancellation_flag(job_id, trigger_source)
         
     finally:
         # Release lock
@@ -477,35 +602,12 @@ def run_backup_job(job_id, trigger_source='manual'):
         except Exception as e:
             print(f"⚠️ Error releasing lock for job {job_id} ({trigger_source}): {e}")
 
-
-def determine_run_targets(job, trigger_source):
-    """Determine which schedule types should run for this trigger"""
-    schedule_config = normalize_schedule_config(
-        job.schedule_config,
-        job.schedule_type,
-        job.cron_expression,
-        fallback_retention=job.retention_policy,
-    )
-    enabled_schedule_types = get_enabled_schedule_types(schedule_config)
-
-    # If trigger_source is 'manual' or a specific schedule type
-    if trigger_source == 'manual':
-        return enabled_schedule_types or ['manual']
-
-    # If trigger_source is a specific schedule type, run only that one
-    if trigger_source in enabled_schedule_types:
-        return [trigger_source]
-
-    return enabled_schedule_types or ['manual']
-
-
 def build_history_message(message, database_results):
     if not database_results:
         return message
 
     summary = summarize_database_results(database_results)
     return f"{message}\n{summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases."
-
 
 def summarize_database_results(database_results):
     success_count = len([item for item in database_results if item.get('status') == 'success'])
@@ -516,7 +618,6 @@ def summarize_database_results(database_results):
         'failed_count': failed_count,
         'total_count': total_count,
     }
-
 
 def send_notification_email(job, history, schedule_targets, success, message, database_results):
     """Send an HTML backup report email via SMTP using environment variables."""
@@ -556,7 +657,6 @@ def send_notification_email(job, history, schedule_targets, success, message, da
         print(f"📧 Notification email sent to: {smtp_config['receiver_email']}")
     except Exception as e:
         print(f"⚠️ Error sending notification email: {e}")
-
 
 def send_test_email(recipient_email):
     """Send a simple SMTP test email to verify configuration."""
@@ -620,7 +720,6 @@ def send_test_email(recipient_email):
                 server.ehlo()
             login_and_send(server, smtp_config, email_message)
 
-
 def login_and_send(server, smtp_config, email_message):
     if smtp_config['username']:
         server.login(smtp_config['username'], smtp_config['password'])
@@ -629,7 +728,6 @@ def login_and_send(server, smtp_config, email_message):
         [smtp_config['receiver_email']],
         email_message.as_string(),
     )
-
 
 def get_smtp_config(job):
     return {
@@ -644,14 +742,12 @@ def get_smtp_config(job):
         'use_ssl': os.getenv('SMTP_USE_SSL', 'false').lower() == 'true',
     }
 
-
 def get_email_schedule_label(schedule_targets):
     if not schedule_targets:
         return "Backup"
     if len(schedule_targets) == 1:
         return schedule_targets[0].capitalize()
     return "Combined"
-
 
 def get_previous_successful_backup(job_id, current_history_id):
     return (
@@ -663,7 +759,6 @@ def get_previous_successful_backup(job_id, current_history_id):
         .order_by(BackupHistory.start_time.desc())
         .first()
     )
-
 
 def build_backup_report_html(job, history, schedule_label, database_results, previous_backup):
     summary = summarize_database_results(database_results)
@@ -740,7 +835,6 @@ def build_backup_report_html(job, history, schedule_label, database_results, pre
     </html>
     """
 
-
 def build_backup_report_text(job, history, schedule_label, database_results, previous_backup, message):
     summary = summarize_database_results(database_results)
     lines = [
@@ -772,7 +866,6 @@ def build_backup_report_text(job, history, schedule_label, database_results, pre
 
     return "\n".join(lines)
 
-
 def format_bytes(size):
     if size is None:
         return "N/A"
@@ -785,7 +878,6 @@ def format_bytes(size):
                 return f"{int(value)}{unit}"
             return f"{value:.1f}{unit}"
         value /= 1024
-
 
 def get_scheduled_jobs():
     """
@@ -810,7 +902,6 @@ def get_scheduled_jobs():
     except Exception as e:
         print(f"❌ Error getting scheduled jobs: {e}")
         return []
-
 
 def reschedule_all_jobs():
     """
@@ -847,7 +938,6 @@ def reschedule_all_jobs():
         
         print(f"✅ Successfully rescheduled {scheduled_count}/{len(jobs)} jobs")
 
-
 def pause_scheduler():
     """
     Pause the scheduler (stop running jobs)
@@ -859,7 +949,6 @@ def pause_scheduler():
     else:
         print("❌ Scheduler not running or not available")
 
-
 def resume_scheduler():
     """
     Resume the scheduler
@@ -870,7 +959,6 @@ def resume_scheduler():
         print("▶️ Scheduler resumed")
     else:
         print("❌ Scheduler not available")
-
 
 def get_scheduler_status():
     """
@@ -908,7 +996,6 @@ def get_scheduler_status():
             'job_count': 0
         }
 
-
 def test_job_execution(job_id):
     """
     Test if a job can be executed (for debugging)
@@ -920,7 +1007,6 @@ def test_job_execution(job_id):
     except Exception as e:
         print(f"❌ Job test failed: {e}")
         return False
-
 
 # Clean up on module import to handle any stale lock files
 def cleanup_stale_locks():
@@ -946,7 +1032,6 @@ def cleanup_stale_locks():
     except Exception as e:
         print(f"⚠️ Error cleaning up stale locks: {e}")
 
-
 def is_lock_file_active(lock_path):
     try:
         with open(lock_path, 'a+') as lock_handle:
@@ -958,7 +1043,6 @@ def is_lock_file_active(lock_path):
                 return True
     except OSError:
         return False
-
 
 # Run cleanup on module import
 cleanup_stale_locks()
@@ -979,16 +1063,22 @@ def print_scheduler_debug_info():
     print(f"📊 Scheduler Status: {status['status']}")
     print(f"🏃 Running: {status['running']}")
     print(f"📋 Job Count: {status['job_count']}")
+    print(f"⏰ Timezone: {scheduler.timezone if hasattr(scheduler, 'timezone') else 'UTC'}")
     
     if status['job_count'] > 0:
-        print("\n📅 Scheduled Jobs:")
+        print("\n📅 Scheduled Jobs (Local Time):")
         for job_info in status['next_runs']:
-            print(f"   - {job_info['job_id']}: {job_info['next_run']}")
+            # Convert to local time
+            job = scheduler.get_job(job_info['job_id'])
+            if job and job.next_run_time:
+                local_time = job.next_run_time.astimezone()
+                print(f"   - {job_info['job_id']}: {local_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            else:
+                print(f"   - {job_info['job_id']}: Not scheduled")
     else:
         print("\n📭 No jobs scheduled")
     
     print("="*50 + "\n")
-
 
 # Call debug info when module loads
 print_scheduler_debug_info()

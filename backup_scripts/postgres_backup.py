@@ -11,10 +11,12 @@ from job_schedules import get_enabled_schedule_types, get_schedule_retention, no
 
 def postgres_backup(server, databases, location, folder_path, schedule_types, job_id=None, schedule_type=None):
     """
-    PostgreSQL backup with improved error handling and step-by-step processing.
-    Each database is: dumped -> compressed -> uploaded -> cleaned up
+    PostgreSQL backup with process tracking for cancellation
     """
     print(f"🔍 DEBUG: postgres_backup called with schedule_type={schedule_type}, job_id={job_id}")
+    
+    # Get the scheduler module to register processes
+    from scheduler import register_backup_process, unregister_backup_process
     
     # Create job and schedule-specific tmp directory
     job_tmp_dir = create_job_tmp_directory(job_id, schedule_type)
@@ -53,6 +55,7 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         
         # Track results for each database
         database_results = []
+        all_backup_files = []  # Track ALL successfully created files
         total_success = 0
         total_failed = 0
         uploaded_files = []
@@ -89,25 +92,41 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
             
             dump_success = False
             dump_error = ""
+            process = None
             
             try:
-                with open(sql_filepath, 'w') as f:
-                    process = subprocess.Popen(pg_dump_cmd, env=env, stdout=f, stderr=subprocess.PIPE, text=True)
-                    _, stderr = process.communicate()
+                # Start the pg_dump process
+                process = subprocess.Popen(
+                    pg_dump_cmd,
+                    env=env,
+                    stdout=open(sql_filepath, 'w'),
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    preexec_fn=os.setsid  # Create a new process group for easy killing
+                )
+                
+                # Register the process for cancellation
+                register_backup_process(job_id, schedule_type, process, None)
+                
+                # Wait for the process to complete
+                stdout, stderr = process.communicate()
+                
+                if process.returncode == 0:
+                    dump_success = True
+                    sql_size = os.path.getsize(sql_filepath) if os.path.exists(sql_filepath) else 0
+                    print(f"   ✅ Dump completed successfully! Size: {sql_size} bytes")
+                else:
+                    dump_success = False
+                    dump_error = stderr.strip() if stderr else "Unknown error"
+                    print(f"   ❌ Dump failed! Error: {dump_error}")
                     
-                    if process.returncode == 0:
-                        dump_success = True
-                        sql_size = os.path.getsize(sql_filepath) if os.path.exists(sql_filepath) else 0
-                        print(f"   ✅ Dump completed successfully! Size: {sql_size} bytes")
-                    else:
-                        dump_success = False
-                        dump_error = stderr.strip() if stderr else "Unknown error"
-                        print(f"   ❌ Dump failed! Error: {dump_error}")
-                        
             except Exception as e:
                 dump_success = False
                 dump_error = str(e)
                 print(f"   ❌ Dump failed with exception: {dump_error}")
+            finally:
+                # Unregister the process
+                unregister_backup_process(job_id, schedule_type)
             
             # If dump failed, record failure and continue to next database
             if not dump_success:
@@ -197,6 +216,9 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                             upload_success = True
                             uploaded_path = upload_result[2] if upload_result[2] else gz_filename
                             print(f"   ✅ Uploaded successfully: {uploaded_path}")
+                            
+                            # CRITICAL: Add to all_backup_files for tracking
+                            all_backup_files.append((gz_filepath, gz_filename))
                             
                             # Track uploaded files
                             total_size += compressed_size

@@ -12,6 +12,8 @@ from job_schedules import (
     normalize_schedule_config,
     validate_schedule_config,
 )
+from flask import send_file
+from datetime import datetime
 import json
 import os
 import fcntl
@@ -23,6 +25,9 @@ from urllib.parse import quote_plus
 load_dotenv()
 
 app = Flask(__name__)
+
+app.config['APP_TIMEZONE'] = 'Asia/Dhaka'
+
 
 # MySQL Configuration from Environment Variables
 MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
@@ -91,6 +96,35 @@ def filesize_filter(size):
         value /= 1024
 
 @app.context_processor
+def inject_log_helpers():
+    def get_job_logs(job_id):
+        logs_dir = Path(app.root_path) / 'backup_logs'
+        if not logs_dir.exists():
+            return []
+        
+        log_files = []
+        for log_file in logs_dir.glob(f"backup_job_{job_id}_*.log"):
+            try:
+                schedule_type = log_file.name.replace(f"backup_job_{job_id}_", "").replace(".log", "")
+                if schedule_type in ['daily', 'weekly', 'monthly', 'yearly']:
+                    log_files.append({
+                        'name': log_file.name,
+                        'schedule_type': schedule_type,
+                        'path': str(log_file),
+                        'size': log_file.stat().st_size,
+                        'modified': datetime.fromtimestamp(log_file.stat().st_mtime)
+                    })
+            except:
+                pass
+        log_files.sort(key=lambda x: x['modified'], reverse=True)
+        return log_files
+    
+    return {
+        'get_job_logs': get_job_logs,
+        'view_schedule_log': view_schedule_log
+    }
+
+@app.context_processor
 def inject_schedule_helpers():
     return {
         'get_schedule_entries': get_schedule_entries,
@@ -100,7 +134,8 @@ def inject_schedule_helpers():
 def ensure_database_schema():
     """Ensure MySQL schema has all required columns"""
     try:
-        inspector = db.engine.execute(text("""
+        # Use db.session.execute() instead of db.engine.execute()
+        inspector = db.session.execute(text("""
             SELECT COLUMN_NAME 
             FROM INFORMATION_SCHEMA.COLUMNS 
             WHERE TABLE_NAME = 'backup_job' 
@@ -114,7 +149,7 @@ def ensure_database_schema():
             print("✅ Added schedule_config column to backup_job")
 
         # Check backup_history columns
-        inspector = db.engine.execute(text("""
+        inspector = db.session.execute(text("""
             SELECT COLUMN_NAME 
             FROM INFORMATION_SCHEMA.COLUMNS 
             WHERE TABLE_NAME = 'backup_history' 
@@ -125,6 +160,19 @@ def ensure_database_schema():
         if 'log_path' not in history_column_names:
             db.session.execute(text("ALTER TABLE backup_history ADD COLUMN log_path VARCHAR(500)"))
             print("✅ Added log_path column to backup_history")
+            
+        # Add new columns for cancellation
+        if 'is_cancelled' not in history_column_names:
+            db.session.execute(text("ALTER TABLE backup_history ADD COLUMN is_cancelled BOOLEAN DEFAULT FALSE"))
+            print("✅ Added is_cancelled column to backup_history")
+            
+        if 'cancelled_at' not in history_column_names:
+            db.session.execute(text("ALTER TABLE backup_history ADD COLUMN cancelled_at DATETIME"))
+            print("✅ Added cancelled_at column to backup_history")
+            
+        if 'cancelled_by' not in history_column_names:
+            db.session.execute(text("ALTER TABLE backup_history ADD COLUMN cancelled_by VARCHAR(50)"))
+            print("✅ Added cancelled_by column to backup_history")
 
         db.session.commit()
         print("✅ Database schema check completed")
@@ -169,6 +217,48 @@ def migrate_backup_job_schedules():
         db.session.commit()
         print("✅ Migrated backup job schedules")
 
+def add_unique_constraint_to_job_name():
+    """Add unique constraint to backup_job name if it doesn't exist"""
+    try:
+        # Check if the constraint already exists
+        result = db.session.execute(text("""
+            SELECT CONSTRAINT_NAME 
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS 
+            WHERE TABLE_NAME = 'backup_job' 
+            AND CONSTRAINT_TYPE = 'UNIQUE'
+            AND TABLE_SCHEMA = DATABASE()
+        """))
+        
+        constraints = [row[0] for row in result]
+        
+        # If no unique constraint exists, add it
+        if not any('name' in constraint.lower() for constraint in constraints):
+            # First, check for duplicate names
+            duplicates = db.session.execute(text("""
+                SELECT name, COUNT(*) as count 
+                FROM backup_job 
+                GROUP BY name 
+                HAVING COUNT(*) > 1
+            """)).fetchall()
+            
+            if duplicates:
+                print("⚠️ Found duplicate job names. Please resolve them manually:")
+                for dup in duplicates:
+                    print(f"   - {dup[0]} appears {dup[1]} times")
+                print("💡 You can rename duplicates before adding unique constraint")
+                return
+            
+            # Add unique constraint
+            db.session.execute(text("""
+                ALTER TABLE backup_job 
+                ADD CONSTRAINT unique_job_name UNIQUE (name)
+            """))
+            db.session.commit()
+            print("✅ Added unique constraint to backup_job.name")
+    except Exception as e:
+        print(f"⚠️ Error adding unique constraint: {e}")
+        db.session.rollback()
+
 def test_mysql_connection():
     """Test MySQL connection on startup"""
     try:
@@ -192,6 +282,7 @@ with app.app_context():
     # Create tables if they don't exist
     db.create_all()
     ensure_database_schema()
+    add_unique_constraint_to_job_name()
     migrate_backup_job_schedules()
     
     print("🔄 Initializing scheduler...")
@@ -276,19 +367,62 @@ def logout():
 def dashboard():
     if 'user' not in session:
         return redirect(url_for('login'))
-    # your existing dashboard logic here
+    
+    # Get basic counts
     servers = DatabaseServer.query.filter_by(is_active=True).count()
     locations = StorageLocation.query.filter_by(is_active=True).count()
-    jobs = BackupJob.query.filter_by(is_active=True).count()
-    recent_history = BackupHistory.query.order_by(BackupHistory.start_time.desc()).limit(10).all()
+    total_jobs = BackupJob.query.count()
+    active_jobs = BackupJob.query.filter_by(is_active=True).count()
+    
+    # Get job execution statistics (last 30 days)
+    from datetime import datetime, timedelta
+    thirty_days_ago = datetime.now() - timedelta(days=30)
+    
+    successful_runs = BackupHistory.query.filter(
+        BackupHistory.status == 'success',
+        BackupHistory.start_time >= thirty_days_ago
+    ).count()
+    
+    failed_runs = BackupHistory.query.filter(
+        BackupHistory.status == 'failed',
+        BackupHistory.start_time >= thirty_days_ago
+    ).count()
+    
+    # Get currently running jobs
+    running_jobs = BackupHistory.query.filter(
+        BackupHistory.status == 'running',
+        BackupHistory.start_time >= datetime.now() - timedelta(hours=1)
+    ).count()
+    
+    # Calculate success rate
+    total_runs = successful_runs + failed_runs
+    if total_runs > 0:
+        success_rate = round((successful_runs / total_runs) * 100, 1)
+    else:
+        success_rate = 0
+    
+    # Get recent history
+    recent_history = BackupHistory.query.order_by(
+        BackupHistory.start_time.desc()
+    ).limit(10).all()
     
     return render_template('dashboard.html', 
                           servers=servers, 
                           locations=locations, 
-                          jobs=jobs,
+                          jobs=active_jobs,
+                          total_jobs=total_jobs,
+                          active_jobs=active_jobs,
+                          successful_runs=successful_runs,
+                          failed_runs=failed_runs,
+                          running_jobs=running_jobs,
+                          success_rate=success_rate,
                           history=recent_history)
 
-# Database Servers Routes
+
+# ============================================
+# DATABASE SERVERS ROUTES
+# ============================================
+
 @app.route('/database_servers', methods=['GET', 'POST'])
 def database_servers():
     if request.method == 'POST':
@@ -369,7 +503,10 @@ def test_connection(server_id):
     success, message = server.test_connection()
     return jsonify({'success': success, 'message': message})
 
-# Storage Locations Routes
+# ============================================
+# STORAGE LOCATIONS ROUTES
+# ============================================
+
 @app.route('/storage_locations', methods=['GET', 'POST'])
 def storage_locations():
     if request.method == 'POST':
@@ -409,7 +546,6 @@ def storage_locations():
     locations = StorageLocation.query.all()
     return render_template('storage_locations.html', locations=locations)
 
-# Edit storage location - show form
 @app.route('/edit_location/<int:location_id>', methods=['GET'])
 def edit_location(location_id):
     try:
@@ -424,7 +560,6 @@ def edit_location(location_id):
         print(f"Error in edit_location: {str(e)}")
         return f"Error: {str(e)}", 500
 
-# Edit storage location - process form
 @app.route('/edit_location/<int:location_id>', methods=['POST'])
 def update_location(location_id):
     location = StorageLocation.query.get_or_404(location_id)
@@ -475,120 +610,10 @@ def delete_location(location_id):
     
     return jsonify({'success': True, 'message': 'Storage location deleted successfully'})
 
-# Backup Jobs Routes
-# @app.route('/backup_jobs', methods=['GET', 'POST'])
-# def backup_jobs():
-#     if request.method == 'POST':
-#         name = request.form.get('name')
-#         description = request.form.get('description')
-#         database_server_id = request.form.get('database_server')
-#         databases = request.form.getlist('databases')
-#         storage_location_id = request.form.get('storage_location')
-#         folder_path = request.form.get('folder_path')
-#         schedule_config = build_schedule_config_from_form(request.form)
-#         notification_email = request.form.get('notification_email')
+# ============================================
+# BACKUP JOBS ROUTES
+# ============================================
 
-#         is_valid, validation_message = validate_schedule_config(schedule_config)
-#         if not is_valid:
-#             flash(validation_message, "danger")
-#             return redirect(url_for('backup_jobs'))
-
-#         primary_schedule_type = get_primary_schedule_type(schedule_config)
-#         cron_expression = get_cron_expression(primary_schedule_type, schedule_config[primary_schedule_type])
-        
-#         job = BackupJob(
-#             name=name,
-#             description=description,
-#             database_server_id=database_server_id,
-#             databases=json.dumps(databases),
-#             storage_location_id=storage_location_id,
-#             folder_path=folder_path,
-#             schedule_type=primary_schedule_type,
-#             cron_expression=cron_expression,
-#             schedule_config=json.dumps(schedule_config),
-#             retention_policy=int(schedule_config[primary_schedule_type]['retention']),
-#             notification_email=notification_email
-#         )
-        
-#         db.session.add(job)
-#         db.session.commit()
-        
-#         # Schedule the job
-#         schedule_backup_job(scheduler, job)
-        
-#         return redirect(url_for('backup_jobs'))
-    
-#     # Get pagination parameters
-#     page = request.args.get('page', 1, type=int)
-#     per_page = request.args.get('per_page', 10, type=int)
-#     search = request.args.get('search', '', type=str)
-#     status_filter = request.args.get('status', 'all', type=str)
-    
-#     # Build query
-#     query = BackupJob.query
-    
-#     # Apply search filter
-#     if search:
-#         search_term = f"%{search}%"
-#         query = query.join(DatabaseServer).join(StorageLocation).filter(
-#             or_(
-#                 BackupJob.name.ilike(search_term),
-#                 DatabaseServer.name.ilike(search_term),
-#                 StorageLocation.name.ilike(search_term)
-#             )
-#         )
-    
-#     # Apply status filter
-#     if status_filter == 'active':
-#         query = query.filter_by(is_active=True)
-#     elif status_filter == 'inactive':
-#         query = query.filter_by(is_active=False)
-    
-#     # Order by name
-#     query = query.order_by(BackupJob.name.asc())
-    
-#     # Paginate
-#     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
-#     jobs = pagination.items
-    
-#     # Get all servers and locations for the modal
-#     servers = DatabaseServer.query.filter_by(is_active=True).all()
-#     locations = StorageLocation.query.filter_by(is_active=True).all()
-    
-#     # Get latest history for each job
-#     latest_history_by_job = {}
-#     job_ids = [job.id for job in jobs]
-#     if job_ids:
-#         history_records = BackupHistory.query.filter(
-#             BackupHistory.backup_job_id.in_(job_ids)
-#         ).order_by(
-#             BackupHistory.backup_job_id.asc(),
-#             BackupHistory.start_time.desc(),
-#             BackupHistory.id.desc(),
-#         ).all()
-        
-#         for record in history_records:
-#             if record.backup_job_id not in latest_history_by_job:
-#                 latest_history_by_job[record.backup_job_id] = record
-    
-#     # Add normalized schedule config and latest history to each job
-#     for job in jobs:
-#         job.normalized_schedule_config = normalize_schedule_config(
-#             job.schedule_config,
-#             job.schedule_type,
-#             job.cron_expression,
-#             fallback_retention=job.retention_policy,
-#         )
-#         job.latest_history = latest_history_by_job.get(job.id)
-    
-#     return render_template('backup_jobs.html', 
-#                           jobs=jobs,
-#                           servers=servers,
-#                           locations=locations,
-#                           pagination=pagination,
-#                           search=search,
-#                           status_filter=status_filter,
-#                           per_page=per_page)
 @app.route('/backup_jobs', methods=['GET', 'POST'])
 def backup_jobs():
     if request.method == 'POST':
@@ -668,6 +693,10 @@ def backup_jobs():
 
         primary_schedule_type = get_primary_schedule_type(schedule_config)
         cron_expression = get_cron_expression(primary_schedule_type, schedule_config[primary_schedule_type])
+        
+        # Handle "All Databases" - store as special value
+        if '__all__' in databases:
+            databases = ['__all__']  # Store as '__all__' to indicate auto-detect
         
         try:
             job = BackupJob(
@@ -818,10 +847,24 @@ def edit_job(job_id):
 def update_job(job_id):
     job = BackupJob.query.get_or_404(job_id)
     
-    job.name = request.form.get('name')
+    new_name = request.form.get('name')
+    
+    # Check if the new name conflicts with another job
+    if new_name != job.name:
+        existing_job = BackupJob.query.filter_by(name=new_name).first()
+        if existing_job:
+            flash(f'A backup job with the name "{new_name}" already exists. Please choose a different name.', "danger")
+            return redirect(url_for('edit_job', job_id=job_id))
+    
+    job.name = new_name
     job.description = request.form.get('description')
     job.database_server_id = request.form.get('database_server')
-    job.databases = json.dumps(request.form.getlist('databases'))
+    
+    databases = request.form.getlist('databases')
+    if '__all__' in databases:
+        databases = ['__all__']
+    job.databases = json.dumps(databases)
+    
     job.storage_location_id = request.form.get('storage_location')
     job.folder_path = request.form.get('folder_path')
     job.notification_email = request.form.get('notification_email')
@@ -837,10 +880,14 @@ def update_job(job_id):
     job.schedule_config = json.dumps(schedule_config)
     job.retention_policy = int(schedule_config[job.schedule_type]['retention'])
     
-    db.session.commit()
-    
-    # Reschedule the job
-    schedule_backup_job(scheduler, job)
+    try:
+        db.session.commit()
+        # Reschedule the job
+        schedule_backup_job(scheduler, job)
+        flash(f'Backup job "{job.name}" updated successfully!', "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error updating job: {str(e)}', "danger")
     
     return redirect(url_for('backup_jobs'))
 
@@ -853,19 +900,40 @@ def run_job(job_id):
 
     return jsonify({'success': True, 'message': 'Backup job queued successfully and is running in the background.'})
 
-@app.route('/test_email', methods=['POST'])
-def test_email():
-    payload = request.get_json(silent=True) or {}
-    recipient_email = (payload.get('email') or '').strip()
-
-    if not recipient_email:
-        return jsonify({'success': False, 'message': 'Enter a recipient email first.'}), 400
-
-    try:
-        send_test_email(recipient_email)
-        return jsonify({'success': True, 'message': f'Test email sent to {recipient_email}.'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 400
+@app.route('/cancel_job/<int:job_id>', methods=['POST'])
+def cancel_job(job_id):
+    """Cancel a running backup job"""
+    from scheduler import cancel_backup_job, get_scheduler_status
+    
+    # Check if scheduler is running
+    status = get_scheduler_status()
+    if not status['running']:
+        return jsonify({'success': False, 'message': 'Scheduler is not running'}), 503
+    
+    # Check if job exists
+    job = BackupJob.query.get_or_404(job_id)
+    
+    # Find the running history
+    running_history = BackupHistory.query.filter(
+        BackupHistory.backup_job_id == job_id,
+        BackupHistory.status == 'running'
+    ).order_by(BackupHistory.start_time.desc()).first()
+    
+    if not running_history:
+        return jsonify({'success': False, 'message': 'No running job found to cancel'})
+    
+    # Cancel the job
+    trigger_source = running_history.trigger_source or 'manual'
+    result = cancel_backup_job(job_id, trigger_source)
+    
+    if result:
+        return jsonify({
+            'success': True, 
+            'message': f'Job "{job.name}" cancellation requested successfully',
+            'status': 'cancelled'
+        })
+    else:
+        return jsonify({'success': False, 'message': 'Failed to cancel job'}), 500
 
 @app.route('/toggle_job/<int:job_id>', methods=['POST'])
 def toggle_job(job_id):
@@ -882,12 +950,33 @@ def toggle_job(job_id):
     
     return jsonify({'success': True, 'message': message, 'is_active': job.is_active})
 
-# API Routes
+# ============================================
+# EMAIL ROUTES
+# ============================================
+
+@app.route('/test_email', methods=['POST'])
+def test_email():
+    payload = request.get_json(silent=True) or {}
+    recipient_email = (payload.get('email') or '').strip()
+
+    if not recipient_email:
+        return jsonify({'success': False, 'message': 'Enter a recipient email first.'}), 400
+
+    try:
+        send_test_email(recipient_email)
+        return jsonify({'success': True, 'message': f'Test email sent to {recipient_email}.'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+# ============================================
+# API ROUTES
+# ============================================
+
 @app.route('/api/jobs')
 def api_get_jobs():
     """API endpoint for getting jobs with pagination and filtering"""
     page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
+    per_page = request.args.get('per_page', 2, type=int)
     search = request.args.get('search', '', type=str)
     status = request.args.get('status', 'all', type=str)
     
@@ -913,11 +1002,14 @@ def api_get_jobs():
     
     jobs = []
     for job in pagination.items:
+        databases = json.loads(job.databases) if job.databases else []
         jobs.append({
             'id': job.id,
             'name': job.name,
             'description': job.description,
             'is_active': job.is_active,
+            'databases': databases,
+            'auto_detect': '__all__' in databases,
             'database_server': {
                 'id': job.database_server.id,
                 'name': job.database_server.name,
@@ -948,6 +1040,29 @@ def api_get_jobs():
         'prev_num': pagination.prev_num,
         'next_num': pagination.next_num,
     })
+
+@app.route('/api/check-job-name', methods=['POST'])
+def check_job_name():
+    """Check if a job name already exists"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'exists': False, 'error': 'No data provided'}), 400
+            
+        name = data.get('name', '').strip()
+        exclude_id = data.get('exclude_id')
+        
+        if not name:
+            return jsonify({'exists': False, 'error': 'Name is required'}), 400
+        
+        query = BackupJob.query.filter(db.func.lower(BackupJob.name) == db.func.lower(name))
+        if exclude_id:
+            query = query.filter(BackupJob.id != exclude_id)
+        
+        exists = query.first() is not None
+        return jsonify({'exists': exists})
+    except Exception as e:
+        return jsonify({'exists': False, 'error': str(e)}), 500
 
 @app.route('/get_databases/<int:server_id>')
 def get_databases(server_id):
@@ -981,12 +1096,17 @@ def get_databases(server_id):
             databases = [db[0] for db in cursor.fetchall() if db[0] != 'postgres']
             cursor.close()
             conn.close()
+        else:
+            return jsonify({'success': False, 'message': 'Unsupported database type'})
         
         return jsonify({'success': True, 'databases': databases})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
-# Reports Route
+# ============================================
+# REPORTS ROUTES
+# ============================================
+
 @app.route('/reports')
 def reports():
     job_id = request.args.get('job_id')
@@ -1011,6 +1131,28 @@ def reports():
     
     return render_template('reports.html', history=history, jobs=jobs, pagination=pagination)
 
+# @app.route('/reports/<int:history_id>/log')
+# def view_backup_log(history_id):
+#     record = BackupHistory.query.get_or_404(history_id)
+
+#     if not record.log_path:
+#         flash("No log file is available for this backup run.", "warning")
+#         return redirect(url_for('reports'))
+
+#     log_path = Path(record.log_path).resolve()
+#     logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+
+#     try:
+#         log_path.relative_to(logs_root)
+#     except ValueError:
+#         abort(404)
+
+#     if not log_path.exists() or not log_path.is_file():
+#         flash("The log file could not be found on disk.", "warning")
+#         return redirect(url_for('reports'))
+
+#     log_content = log_path.read_text(encoding='utf-8', errors='replace')
+#     return render_template('backup_log.html', record=record, log_content=log_content)
 @app.route('/reports/<int:history_id>/log')
 def view_backup_log(history_id):
     record = BackupHistory.query.get_or_404(history_id)
@@ -1027,14 +1169,249 @@ def view_backup_log(history_id):
     except ValueError:
         abort(404)
 
+    # If the specific log doesn't exist, try to find it
     if not log_path.exists() or not log_path.is_file():
-        flash("The log file could not be found on disk.", "warning")
-        return redirect(url_for('reports'))
+        # Try to find the log file with schedule-specific naming
+        job_id = record.backup_job_id
+        trigger_source = getattr(record, 'trigger_source', 'daily')
+        
+        # Check if the log file exists with schedule-specific name
+        schedule_log_path = logs_root / f"backup_job_{job_id}_{trigger_source}.log"
+        if schedule_log_path.exists():
+            log_path = schedule_log_path
+        else:
+            flash("The log file could not be found on disk.", "warning")
+            return redirect(url_for('reports'))
 
     log_content = log_path.read_text(encoding='utf-8', errors='replace')
     return render_template('backup_log.html', record=record, log_content=log_content)
 
-# Scheduler Management Routes
+# @app.route('/logs/job/<int:job_id>')
+# def view_job_logs(job_id):
+#     """View all logs for a specific job"""
+#     job = BackupJob.query.get_or_404(job_id)
+#     logs_dir = Path(app.root_path) / 'backup_logs'
+    
+#     if not logs_dir.exists():
+#         flash("No logs found for this job.", "warning")
+#         return redirect(url_for('backup_jobs'))
+    
+#     # Get all log files for this job
+#     log_files = []
+#     for log_file in logs_dir.glob(f"backup_job_{job_id}_*.log"):
+#         try:
+#             # Extract schedule type from filename
+#             schedule_type = log_file.name.replace(f"backup_job_{job_id}_", "").replace(".log", "")
+#             if schedule_type in ['daily', 'weekly', 'monthly', 'yearly']:
+#                 log_files.append({
+#                     'name': log_file.name,
+#                     'schedule_type': schedule_type,
+#                     'path': str(log_file),
+#                     'size': log_file.stat().st_size,
+#                     'modified': datetime.fromtimestamp(log_file.stat().st_mtime)
+#                 })
+#         except Exception as e:
+#             print(f"Error processing log file {log_file}: {e}")
+    
+#     # Sort by modified time (newest first)
+#     log_files.sort(key=lambda x: x['modified'], reverse=True)
+    
+#     return render_template('job_logs.html', job=job, log_files=log_files)
+
+@app.route('/logs/job/<int:job_id>')
+def view_job_logs(job_id):
+    """View all logs for a specific job"""
+    job = BackupJob.query.get_or_404(job_id)
+    logs_dir = Path(app.root_path) / 'backup_logs'
+    
+    if not logs_dir.exists():
+        flash("No logs found for this job.", "warning")
+        return redirect(url_for('backup_jobs'))
+    
+    # Get all log files for this job
+    log_files = []
+    for log_file in logs_dir.glob(f"backup_job_{job_id}_*.log"):
+        try:
+            # Extract schedule type from filename
+            schedule_type = log_file.name.replace(f"backup_job_{job_id}_", "").replace(".log", "")
+            if schedule_type in ['daily', 'weekly', 'monthly', 'yearly']:
+                log_files.append({
+                    'name': log_file.name,
+                    'schedule_type': schedule_type,
+                    'path': str(log_file),
+                    'size': log_file.stat().st_size,
+                    'modified': datetime.fromtimestamp(log_file.stat().st_mtime)
+                })
+        except Exception as e:
+            print(f"Error processing log file {log_file}: {e}")
+    
+    # Sort by modified time (newest first)
+    log_files.sort(key=lambda x: x['modified'], reverse=True)
+    
+    return render_template('job_logs.html', job=job, log_files=log_files)
+
+# @app.route('/logs/job/<int:job_id>/<schedule_type>')
+# def view_schedule_log(job_id, schedule_type):
+#     """View a specific schedule log"""
+#     job = BackupJob.query.get_or_404(job_id)
+#     logs_dir = Path(app.root_path) / 'backup_logs'
+#     log_path = logs_dir / f"backup_job_{job_id}_{schedule_type}.log"
+    
+#     if not log_path.exists():
+#         flash(f"No log file found for {schedule_type} schedule.", "warning")
+#         return redirect(url_for('view_job_logs', job_id=job_id))
+    
+#     log_content = log_path.read_text(encoding='utf-8', errors='replace')
+    
+#     # Create a fake history record for display
+#     class FakeHistory:
+#         def __init__(self, job, schedule_type):
+#             self.backup_job = job
+#             self.backup_job_id = job.id
+#             self.trigger_source = schedule_type
+#             self.start_time = datetime.fromtimestamp(log_path.stat().st_mtime)
+#             self.end_time = self.start_time
+#             self.status = 'success'  # Default, will be determined from content
+#             self.log_path = str(log_path)
+#             self.file_size = log_path.stat().st_size
+#             self.message = f"Showing {schedule_type} schedule log"
+    
+#     # Try to determine status from log content
+#     status = 'success'
+#     if 'FAILED' in log_content or 'Error' in log_content:
+#         status = 'failed'
+#     elif 'Running' in log_content or 'running' in log_content:
+#         status = 'running'
+    
+#     fake_record = FakeHistory(job, schedule_type)
+#     fake_record.status = status
+    
+#     return render_template('backup_log.html', record=fake_record, log_content=log_content)
+
+@app.route('/logs/job/<int:job_id>/<schedule_type>')
+def view_schedule_log(job_id, schedule_type):
+    """View a specific schedule log"""
+    from datetime import datetime
+    from pathlib import Path
+    
+    job = BackupJob.query.get_or_404(job_id)
+    logs_dir = Path(app.root_path) / 'backup_logs'
+    log_path = logs_dir / f"backup_job_{job_id}_{schedule_type}.log"
+    
+    if not log_path.exists():
+        flash(f"No log file found for {schedule_type} schedule.", "warning")
+        return redirect(url_for('view_job_logs', job_id=job_id))
+    
+    log_content = log_path.read_text(encoding='utf-8', errors='replace')
+    
+    # Create a proper class for the fake history with all required attributes
+    class FakeHistory:
+        def __init__(self, job, schedule_type, log_path):
+            # Add all attributes that might be needed by the template
+            self.id = 9999  # Use a large number to indicate it's a fake record
+            self.backup_job = job
+            self.backup_job_id = job.id
+            self.trigger_source = schedule_type
+            self.start_time = datetime.fromtimestamp(log_path.stat().st_mtime)
+            self.end_time = self.start_time
+            self.status = 'success'  # Default
+            self.log_path = str(log_path)
+            self.file_size = log_path.stat().st_size
+            self.message = f"Showing {schedule_type} schedule log"
+            self.file_path = None  # Add this attribute if needed
+    
+    # Try to determine status from log content
+    status = 'success'
+    log_content_lower = log_content.lower()
+    if 'failed' in log_content_lower or 'error' in log_content_lower:
+        status = 'failed'
+    elif 'running' in log_content_lower:
+        status = 'running'
+    
+    fake_record = FakeHistory(job, schedule_type, log_path)
+    fake_record.status = status
+    
+    return render_template('backup_log.html', record=fake_record, log_content=log_content)
+
+# @app.route('/logs/download/<int:history_id>')
+# def download_log(history_id):
+#     """Download the log file"""
+#     record = BackupHistory.query.get_or_404(history_id)
+    
+#     if not record.log_path:
+#         flash("No log file available for download.", "warning")
+#         return redirect(url_for('reports'))
+    
+#     log_path = Path(record.log_path).resolve()
+#     logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+    
+#     try:
+#         log_path.relative_to(logs_root)
+#     except ValueError:
+#         abort(404)
+    
+#     if not log_path.exists() or not log_path.is_file():
+#         flash("The log file could not be found.", "warning")
+#         return redirect(url_for('reports'))
+    
+#     return send_file(log_path, as_attachment=True, download_name=log_path.name)
+
+@app.route('/logs/download/<int:history_id>')
+def download_log(history_id):
+    """Download the log file"""
+    # If it's a fake record ID (9999), handle differently
+    if history_id == 9999:
+        log_path = request.args.get('log_path')
+        if log_path:
+            return redirect(url_for('download_log_file', log_path=log_path))
+        flash("Invalid log file.", "warning")
+        return redirect(url_for('reports'))
+    
+    record = BackupHistory.query.get_or_404(history_id)
+    
+    if not record.log_path:
+        flash("No log file available for download.", "warning")
+        return redirect(url_for('reports'))
+    
+    log_path = Path(record.log_path).resolve()
+    logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+    
+    try:
+        log_path.relative_to(logs_root)
+    except ValueError:
+        abort(404)
+    
+    if not log_path.exists() or not log_path.is_file():
+        flash("The log file could not be found.", "warning")
+        return redirect(url_for('reports'))
+    
+    return send_file(log_path, as_attachment=True, download_name=log_path.name)
+
+@app.route('/logs/download-file')
+def download_log_file():
+    """Download a log file directly by path"""
+    log_path = request.args.get('log_path')
+    if not log_path:
+        flash("No log file specified.", "warning")
+        return redirect(url_for('reports'))
+    
+    log_path = Path(log_path).resolve()
+    logs_root = (Path(app.root_path) / 'backup_logs').resolve()
+    
+    try:
+        log_path.relative_to(logs_root)
+    except ValueError:
+        abort(404)
+    
+    if not log_path.exists() or not log_path.is_file():
+        flash("The log file could not be found.", "warning")
+        return redirect(url_for('reports'))
+    
+    return send_file(log_path, as_attachment=True, download_name=log_path.name)
+# ============================================
+# SCHEDULER MANAGEMENT ROUTES
+# ============================================
+
 @app.route('/scheduler/status')
 def scheduler_status():
     from scheduler import get_scheduler_status
@@ -1059,7 +1436,10 @@ def resume_scheduler():
     resume_sched()
     return jsonify({'success': True, 'message': 'Scheduler resumed'})
 
-# Debug Routes
+# ============================================
+# DEBUG ROUTES
+# ============================================
+
 @app.route('/debug/scheduler')
 def debug_scheduler():
     from scheduler import get_scheduler_status, get_scheduled_jobs
@@ -1084,7 +1464,8 @@ def debug_scheduler():
                         fallback_retention=job.retention_policy,
                     )
                 ),
-                'is_active': job.is_active
+                'is_active': job.is_active,
+                'databases': json.loads(job.databases) if job.databases else []
             }
             for job in db_jobs
         ]
@@ -1178,7 +1559,8 @@ def debug_scheduler_status():
                         fallback_retention=job.retention_policy,
                     )
                 ),
-                'is_active': job.is_active
+                'is_active': job.is_active,
+                'databases': json.loads(job.databases) if job.databases else []
             }
             for job in db_jobs
         ],
@@ -1292,7 +1674,10 @@ def scheduler_ping():
     
     return jsonify(scheduler_info)
 
-# Error Handlers
+# ============================================
+# ERROR HANDLERS
+# ============================================
+
 @app.errorhandler(404)
 def not_found_error(error):
     return render_template('404.html'), 404
@@ -1302,7 +1687,10 @@ def internal_error(error):
     db.session.rollback()
     return render_template('500.html'), 500
 
-# Cleanup on app shutdown
+# ============================================
+# CLEANUP ON SHUTDOWN
+# ============================================
+
 import atexit
 
 @atexit.register

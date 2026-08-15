@@ -903,7 +903,7 @@ def run_job(job_id):
 @app.route('/cancel_job/<int:job_id>', methods=['POST'])
 def cancel_job(job_id):
     """Cancel a running backup job"""
-    from scheduler import cancel_backup_job, get_scheduler_status
+    from scheduler import cancel_backup_job, get_scheduler_status, running_backup_processes
     
     # Check if scheduler is running
     status = get_scheduler_status()
@@ -924,13 +924,19 @@ def cancel_job(job_id):
     
     # Cancel the job
     trigger_source = running_history.trigger_source or 'manual'
+
+    # Check if there's a running process
+    key = f"{job_id}_{trigger_source}"
+    has_process = key in running_backup_processes
+
     result = cancel_backup_job(job_id, trigger_source)
     
     if result:
         return jsonify({
             'success': True, 
             'message': f'Job "{job.name}" cancellation requested successfully',
-            'status': 'cancelled'
+            'status': 'cancelled',
+            'process_killed': has_process
         })
     else:
         return jsonify({'success': False, 'message': 'Failed to cancel job'}), 500
@@ -1472,6 +1478,36 @@ def debug_scheduler():
     }
     
     return jsonify(debug_info)
+
+@app.route('/debug/running-jobs')
+def debug_running_jobs():
+    """Debug endpoint to check running jobs"""
+    from scheduler import running_backup_processes, running_backup_processes_lock
+    from models import BackupHistory
+    
+    with running_backup_processes_lock:
+        running = []
+        for key, info in running_backup_processes.items():
+            running.append({
+                'key': key,
+                'pid': info['process'].pid if info.get('process') else None,
+                'history_id': info.get('history_id'),
+                'started_at': info.get('started_at', '').isoformat() if info.get('started_at') else None
+            })
+    
+    # Also check database for running jobs
+    db_running = BackupHistory.query.filter_by(status='running').all()
+    db_info = [{
+        'id': h.id,
+        'job_id': h.backup_job_id,
+        'trigger': h.trigger_source,
+        'started': h.start_time.isoformat()
+    } for h in db_running]
+    
+    return jsonify({
+        'processes': running,
+        'database_running': db_info
+    })
 
 @app.route('/test/scheduler/<int:job_id>')
 def test_scheduler(job_id):
