@@ -115,30 +115,37 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="col-md-4">
-                            <div class="d-flex justify-content-end gap-1">
-                                <button class="btn btn-sm btn-outline-primary toggle-expand" data-job-id="{{ job.id }}" title="Expand Details">
-                                    <i class="bi bi-chevron-down"></i>
-                                </button>
-                                <button class="btn btn-sm btn-outline-success run-job" data-job-id="{{ job.id }}" title="Run Now">
-                                    <i class="bi bi-play-fill"></i>
-                                </button>
-                                {% if job.latest_history and job.latest_history.status == 'running' %}
-                                <button class="btn btn-sm btn-danger cancel-job" data-job-id="{{ job.id }}" title="Cancel Running Job">
-                                    <i class="bi bi-stop-circle"></i> Cancel
-                                </button>
-                                {% endif %}
-                                <a href="{{ url_for('edit_job', job_id=job.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit">
-                                    <i class="bi bi-pencil"></i>
-                                </a>
-                                <button class="btn btn-sm btn-outline-danger delete-job" data-job-id="{{ job.id }}" title="Delete">
-                                    <i class="bi bi-trash"></i>
-                                </button>
-                                <button class="btn btn-sm btn-{{ 'warning' if job.is_active else 'success' }} toggle-job" data-job-id="{{ job.id }}" title="{{ 'Disable' if job.is_active else 'Enable' }}">
-                                    <i class="bi bi-{{ 'pause-circle' if job.is_active else 'play-circle' }}"></i>
-                                </button>
-                            </div>
-                        </div>
+<div class="col-md-4">
+    <div class="d-flex justify-content-end gap-1">
+        <button class="btn btn-sm btn-outline-primary toggle-expand" data-job-id="{{ job.id }}" title="Expand Details">
+            <i class="bi bi-chevron-down"></i>
+        </button>
+        
+        <!-- Run Button - Only show if NOT running -->
+        {% if not (job.latest_history and job.latest_history.status == 'running') %}
+        <button class="btn btn-sm btn-outline-success run-job" data-job-id="{{ job.id }}" title="Run Now">
+            <i class="bi bi-play-fill"></i>
+        </button>
+        {% endif %}
+        
+        <!-- Cancel Button - Only show if running -->
+        {% if job.latest_history and job.latest_history.status == 'running' %}
+        <button class="btn btn-sm btn-danger cancel-job" data-job-id="{{ job.id }}" title="Cancel Running Job">
+            <i class="bi bi-stop-circle"></i>
+        </button>
+        {% endif %}
+        
+        <a href="{{ url_for('edit_job', job_id=job.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit">
+            <i class="bi bi-pencil"></i>
+        </a>
+        <button class="btn btn-sm btn-outline-danger delete-job" data-job-id="{{ job.id }}" title="Delete">
+            <i class="bi bi-trash"></i>
+        </button>
+        <button class="btn btn-sm btn-{{ 'warning' if job.is_active else 'success' }} toggle-job" data-job-id="{{ job.id }}" title="{{ 'Disable' if job.is_active else 'Enable' }}">
+            <i class="bi bi-{{ 'pause-circle' if job.is_active else 'play-circle' }}"></i>
+        </button>
+    </div>
+</div>
                     </div>
                 </div>
             </div>
