@@ -10,6 +10,9 @@ from job_schedules import (
     get_schedule_entries,
     matches_schedule,
     normalize_schedule_config,
+    cron_dow_to_apscheduler,  # ← ADD THIS
+    apscheduler_dow_to_cron,  # ← ADD THIS (optional)
+    cron_dow_to_display,      # ← ADD THIS (optional)
 )
 import json
 from datetime import datetime, timedelta, timezone
@@ -91,7 +94,46 @@ class SafeTeeStream:
             except (ValueError, OSError, AttributeError):
                 pass
         self.streams = valid_streams
-
+def kill_process_tree(pid):
+    """
+    Kill a process and all its children using psutil
+    Works in Docker and without Docker
+    """
+    try:
+        import psutil
+        parent = psutil.Process(pid)
+        
+        # Get all children recursively
+        children = parent.children(recursive=True)
+        
+        # Kill children first
+        for child in children:
+            try:
+                print(f"   Killing child process PID: {child.pid}")
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as e:
+                print(f"   ⚠️ Error killing child {child.pid}: {e}")
+        
+        # Kill parent
+        try:
+            parent.kill()
+            print(f"✅ Killed process PID: {pid}")
+        except psutil.NoSuchProcess:
+            print(f"⚠️ Process {pid} no longer exists")
+        except Exception as e:
+            print(f"⚠️ Error killing parent process: {e}")
+        
+        return True
+        
+    except psutil.NoSuchProcess:
+        print(f"⚠️ Process {pid} no longer exists")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error killing process tree: {e}")
+        return False
+    
 def register_backup_process(job_id, trigger_source, process, history_id):
     """Register a running backup process for cancellation"""
     key = f"{job_id}_{trigger_source}"
@@ -416,7 +458,14 @@ def schedule_backup_job(scheduler_obj, job):
         for entry in schedule_entries:
             cron_parts = entry["cron_expression"].split()
             minute, hour, day, month, day_of_week = cron_parts
-            # DEBUG: Print the cron parts
+            # Convert day_of_week from cron format to APScheduler format
+            # Cron: 0=Sunday, 6=Saturday
+            # APScheduler: 0=Monday, 6=Sunday
+            if day_of_week != '*':
+                cron_dow = int(day_of_week)
+                aps_dow = cron_dow_to_apscheduler(cron_dow)
+                print(f"🔄 Converting day_of_week: {cron_dow} (cron) -> {aps_dow} (APScheduler)")
+                day_of_week = str(aps_dow)
             print(f"🔍 DEBUG Cron parts for {entry['type']}:")
             print(f"   minute: {minute}")
             print(f"   hour: {hour}")
@@ -446,6 +495,8 @@ def schedule_backup_job(scheduler_obj, job):
         
     except Exception as e:
         print(f"❌ Error scheduling job {job.name}: {e}")
+        import traceback
+        traceback.print_exc()
 
 def get_next_run_time(scheduler_obj, job_id):
     """Get the next run time for a job"""

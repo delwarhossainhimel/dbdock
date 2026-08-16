@@ -1,0 +1,31 @@
+[Unit]
+Description=dbDock Backup Management Service
+After=network.target mysql.service postgresql.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/dbdock
+Environment="PATH=/root/dbdock/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="TZ=Asia/Dhaka"
+ExecStart=/root/dbdock/venv/bin/python /root/dbdock/app.py
+ExecStop=/bin/kill -15 $MAINPID
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dbdock
+PIDFile=/tmp/dbdock.pid
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/root/dbdock/backup_logs /root/dbdock/tmp /root/dbdock/backupdatabase /tmp
+ProtectHome=no
+
+[Install]
+WantedBy=multi-user.target

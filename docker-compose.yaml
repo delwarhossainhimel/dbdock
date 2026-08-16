@@ -18,7 +18,7 @@ services:
     container_name: dbdock
 
     environment:
-      MYSQL_HOST: "192.168.60.105"
+      MYSQL_HOST: "172.20.0.2"
       MYSQL_PORT: "3306"
       MYSQL_USER: "root"
       MYSQL_PASSWORD: "example"
