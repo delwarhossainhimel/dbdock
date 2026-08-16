@@ -6,11 +6,8 @@ Wants=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/dbdock
-Environment="PATH=/root/dbdock/venv/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="PYTHONUNBUFFERED=1"
-Environment="TZ=Asia/Dhaka"
-ExecStart=/root/dbdock/venv/bin/python /root/dbdock/app.py
+WorkingDirectory=/backup/dbdock
+ExecStart=/backup/dbdock/start_dbdock.sh
 ExecStop=/bin/kill -15 $MAINPID
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
@@ -21,11 +18,11 @@ SyslogIdentifier=dbdock
 PIDFile=/tmp/dbdock.pid
 
 # Security hardening
-PrivateTmp=yes
-NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=/root/dbdock/backup_logs /root/dbdock/tmp /root/dbdock/backupdatabase /tmp
-ProtectHome=no
+#PrivateTmp=yes
+#NoNewPrivileges=yes
+#ProtectSystem=strict
+#ReadWritePaths=/backup/dbdock/backup_logs /backup/dbdock/tmp /backup/dbdock/backupdatabase /backup/dbdock/logs /tmp
+#ProtectHome=no
 
 [Install]
 WantedBy=multi-user.target
