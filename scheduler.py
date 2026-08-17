@@ -29,6 +29,7 @@ import threading
 import uuid
 import signal
 import psutil
+import tempfile
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -49,6 +50,10 @@ cancellation_flags = {}
 # Key: job_id_schedule_type, Value: {'process': process, 'history_id': history_id}
 running_backup_processes = {}
 running_backup_processes_lock = threading.Lock()
+
+# Add a new dictionary to track child processes
+running_child_processes = {}
+running_child_processes_lock = threading.Lock()
 
 class TeeStream:
     def __init__(self, *streams):
@@ -94,17 +99,176 @@ class SafeTeeStream:
             except (ValueError, OSError, AttributeError):
                 pass
         self.streams = valid_streams
+def get_lock_dir():
+    """Get a safe directory for lock files"""
+    lock_dir = '/tmp'
+    if not os.path.exists(lock_dir):
+        lock_dir = tempfile.gettempdir()
+    return lock_dir
+
+
+def kill_process_tree(pid):
+    """
+    Kill a process and all its children using psutil
+    Works in Docker and without Docker
+    """
+    print(f"🔍 Attempting to kill process tree for PID: {pid}")
+    
+    try:
+        import psutil
+        try:
+            parent = psutil.Process(pid)
+            children = parent.children(recursive=True)
+            
+            # Kill children first
+            for child in children:
+                try:
+                    print(f"   Killing child process PID: {child.pid}")
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+                except Exception as e:
+                    print(f"   ⚠️ Error killing child {child.pid}: {e}")
+            
+            # Kill parent
+            try:
+                parent.kill()
+                print(f"✅ Killed process PID: {pid}")
+            except psutil.NoSuchProcess:
+                print(f"⚠️ Process {pid} no longer exists")
+            except Exception as e:
+                print(f"⚠️ Error killing parent process: {e}")
+            
+            return True
+            
+        except psutil.NoSuchProcess:
+            print(f"⚠️ Process {pid} no longer exists")
+            return True
+        except Exception as e:
+            print(f"⚠️ Error killing process tree with psutil: {e}")
+            return kill_process_fallback(pid)
+            
+    except ImportError:
+        # Fallback if psutil not installed
+        return kill_process_fallback(pid)
+
+
+def kill_process_fallback(pid):
+    """
+    Fallback method to kill a process using os.kill
+    """
+    try:
+        # Try to kill the process group
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            print(f"✅ Killed process group for PID: {pid} (fallback)")
+            return True
+        except Exception as e:
+            print(f"⚠️ killpg failed: {e}")
+            # Try to kill the single process
+            os.kill(pid, signal.SIGTERM)
+            print(f"✅ Killed process PID: {pid} (fallback)")
+            return True
+    except ProcessLookupError:
+        print(f"⚠️ Process {pid} not found")
+        return True
+    except Exception as e:
+        print(f"❌ Error killing process {pid}: {e}")
+        return False
+    
+def register_child_process(job_id, trigger_source, process, history_id=None):
+    """
+    Register a child process for tracking (used for "All Databases" mode)
+    """
+    key = f"{job_id}_{trigger_source}"
+    pid = process.pid
+    try:
+        pgid = os.getpgid(pid)
+    except:
+        pgid = pid
+    with running_backup_processes_lock:
+        running_backup_processes[key] = {
+            'process': process,
+            'pid': pid,
+            'pgid': pgid,
+            'history_id': history_id,
+            'started_at': datetime.now()
+        }
+    print(f"📝 Registered process for job {key} (PID: {pid}, PGID: {pgid})")
+
+def unregister_child_process(job_id, trigger_source, process):
+    """
+    Unregister a child process
+    """
+    key = f"{job_id}_{trigger_source}"
+    pid = process.pid
+    
+    with running_child_processes_lock:
+        if key in running_child_processes:
+            running_child_processes[key] = [
+                p for p in running_child_processes[key] if p.get('pid') != pid
+            ]
+            if not running_child_processes[key]:
+                del running_child_processes[key]
+    
+    print(f"🧹 Unregistered child process for job {key} (PID: {pid})")
+
+def kill_child_processes(job_id, trigger_source):
+    """
+    Kill all child processes for a given job
+    """
+    key = f"{job_id}_{trigger_source}"
+    killed_count = 0
+    
+    with running_child_processes_lock:
+        if key in running_child_processes:
+            print(f"   Found {len(running_child_processes[key])} child processes to kill")
+            for child_info in running_child_processes[key]:
+                pid = child_info.get('pid')
+                pgid = child_info.get('pgid')
+                if pid:
+                    try:
+                        print(f"   Killing child process PID: {pid}, PGID: {pgid}")
+                        # Kill the process group
+                        try:
+                            os.killpg(pgid, signal.SIGTERM)
+                            killed_count += 1
+                        except Exception as e:
+                            print(f"   ⚠️ Error killing child {pid}: {e}")
+                            try:
+                                os.kill(pid, signal.SIGKILL)
+                                killed_count += 1
+                            except:
+                                pass
+                    except Exception as e:
+                        print(f"   ⚠️ Error killing child {pid}: {e}")
+            
+            # Clear the list
+            running_child_processes[key] = []
+            # Remove the key if empty
+            if not running_child_processes[key]:
+                del running_child_processes[key]
+    
+    return killed_count
 
 def register_backup_process(job_id, trigger_source, process, history_id):
     """Register a running backup process for cancellation"""
     key = f"{job_id}_{trigger_source}"
+    pid = process.pid
+    try:
+        pgid = os.getpgid(pid)
+    except:
+        pgid = pid
+    
     with running_backup_processes_lock:
         running_backup_processes[key] = {
             'process': process,
+            'pid': pid,
+            'pgid': pgid,
             'history_id': history_id,
             'started_at': datetime.now()
         }
-    print(f"📝 Registered process for job {key} (PID: {process.pid})")
+    print(f"📝 Registered process for job {key} (PID: {pid}, PGID: {pgid})")
 
 
 def unregister_backup_process(job_id, trigger_source):
@@ -115,6 +279,129 @@ def unregister_backup_process(job_id, trigger_source):
             del running_backup_processes[key]
             print(f"🧹 Unregistered process for job {key}")
 
+# def cancel_backup_job(job_id, trigger_source=None):
+#     """
+#     Cancel a running backup job by killing the actual process
+#     """
+#     from app import app
+    
+#     with app.app_context():
+#         from models import BackupHistory, db
+#         from datetime import datetime
+        
+#         # Build the key
+#         if trigger_source:
+#             key = f"{job_id}_{trigger_source}"
+#         else:
+#             key = str(job_id)
+        
+#         # Find the running history record FIRST
+#         query = BackupHistory.query.filter(
+#             BackupHistory.backup_job_id == job_id,
+#             BackupHistory.status == 'running'
+#         )
+#         if trigger_source:
+#             query = query.filter(BackupHistory.trigger_source == trigger_source)
+        
+#         history = query.order_by(BackupHistory.start_time.desc()).first()
+        
+#         if not history:
+#             print(f"❌ No running history found for job {job_id}")
+#             return False
+        
+#         # Check if there's a running process
+#         process_info = None
+#         with running_backup_processes_lock:
+#             # Try exact match first
+#             if key in running_backup_processes:
+#                 process_info = running_backup_processes[key]
+#             else:
+#                 # Try to find by job_id only (any schedule type)
+#                 for k, v in running_backup_processes.items():
+#                     if k.startswith(f"{job_id}_"):
+#                         process_info = v
+#                         key = k
+#                         break
+        
+#         # Kill the process if found
+#         if process_info and process_info.get('process'):
+#             try:
+#                 process = process_info['process']
+#                 pid = process.pid
+                
+#                 print(f"🛑 Attempting to kill process PID: {pid} for job {key}")
+                
+#                 # Kill the entire process tree
+#                 try:
+#                     import psutil
+#                     parent = psutil.Process(pid)
+#                     children = parent.children(recursive=True)
+                    
+#                     # Kill children first (mysqldump/pg_dump processes)
+#                     for child in children:
+#                         try:
+#                             print(f"   Killing child process PID: {child.pid}")
+#                             child.kill()
+#                         except Exception as e:
+#                             print(f"   ⚠️ Error killing child {child.pid}: {e}")
+                    
+#                     # Kill parent process
+#                     parent.kill()
+#                     print(f"✅ Killed process PID: {pid}")
+                    
+#                 except ImportError:
+#                     # Fallback if psutil not installed
+#                     import signal
+#                     os.killpg(os.getpgid(pid), signal.SIGTERM)
+#                     print(f"✅ Killed process group PID: {pid}")
+                    
+#                 except psutil.NoSuchProcess:
+#                     print(f"⚠️ Process {pid} no longer exists")
+#                 except Exception as e:
+#                     print(f"⚠️ Error killing process tree: {e}")
+                
+#                 # Update the history record to CANCELLED
+#                 history.status = 'cancelled'
+#                 history.is_cancelled = True
+#                 history.cancelled_at = datetime.now()
+#                 history.cancelled_by = 'User'
+#                 history.message = 'Job cancelled by user (process killed)'
+#                 db.session.commit()
+#                 print(f"✅ Job {key} marked as CANCELLED in database")
+                
+#                 # Clean up the process info
+#                 with running_backup_processes_lock:
+#                     if key in running_backup_processes:
+#                         del running_backup_processes[key]
+                
+#                 return True
+                
+#             except Exception as e:
+#                 print(f"❌ Error killing process: {e}")
+#                 # Still mark as cancelled even if process kill fails
+#                 history.status = 'cancelled'
+#                 history.is_cancelled = True
+#                 history.cancelled_at = datetime.now()
+#                 history.cancelled_by = 'User'
+#                 history.message = f'Job cancelled by user (process kill failed: {str(e)})'
+#                 db.session.commit()
+#                 return True
+        
+#         # If no process found, still mark as cancelled
+#         history.status = 'cancelled'
+#         history.is_cancelled = True
+#         history.cancelled_at = datetime.now()
+#         history.cancelled_by = 'User'
+#         history.message = 'Job cancelled by user (no process found)'
+#         db.session.commit()
+#         print(f"✅ Job {key} marked as CANCELLED in database (no process found)")
+        
+#         # Clean up process info if exists
+#         with running_backup_processes_lock:
+#             if key in running_backup_processes:
+#                 del running_backup_processes[key]
+        
+#         return True
 def cancel_backup_job(job_id, trigger_source=None):
     """
     Cancel a running backup job by killing the actual process
@@ -131,7 +418,11 @@ def cancel_backup_job(job_id, trigger_source=None):
         else:
             key = str(job_id)
         
-        # Find the running history record FIRST
+        # Set cancellation flag IMMEDIATELY
+        cancellation_flags[key] = True
+        print(f"🛑 Cancellation flag set for {key}")
+        
+        # Find the running history record
         query = BackupHistory.query.filter(
             BackupHistory.backup_job_id == job_id,
             BackupHistory.status == 'running'
@@ -143,99 +434,79 @@ def cancel_backup_job(job_id, trigger_source=None):
         
         if not history:
             print(f"❌ No running history found for job {job_id}")
-            return False
+            return True
+        
+        # KILL ALL CHILD PROCESSES FIRST
+        print(f"🛑 Killing ALL child processes for job {key}...")
+        child_killed = kill_child_processes(job_id, trigger_source)
+        if child_killed > 0:
+            print(f"   ✅ Killed {child_killed} child processes")
+        else:
+            print(f"   ℹ️ No child processes found")
+        
+        # Also kill any orphaned mysqldump processes (for All Databases mode)
+        os.system("pkill -9 mysqldump 2>/dev/null")
+        os.system("pkill -9 pg_dump 2>/dev/null")
         
         # Check if there's a running process
         process_info = None
+        pgid = None
+        pid = None
+        
         with running_backup_processes_lock:
-            # Try exact match first
             if key in running_backup_processes:
                 process_info = running_backup_processes[key]
+                pid = process_info.get('pid')
+                pgid = process_info.get('pgid')
+                print(f"🔍 Found process info for {key}: PID={pid}, PGID={pgid}")
             else:
-                # Try to find by job_id only (any schedule type)
+                # Try to find by job_id only
                 for k, v in running_backup_processes.items():
                     if k.startswith(f"{job_id}_"):
                         process_info = v
+                        pid = process_info.get('pid')
+                        pgid = process_info.get('pgid')
                         key = k
+                        print(f"🔍 Found process info for {k}: PID={pid}, PGID={pgid}")
                         break
         
-        # Kill the process if found
-        if process_info and process_info.get('process'):
-            try:
-                process = process_info['process']
-                pid = process.pid
-                
-                print(f"🛑 Attempting to kill process PID: {pid} for job {key}")
-                
-                # Kill the entire process tree
-                try:
-                    import psutil
-                    parent = psutil.Process(pid)
-                    children = parent.children(recursive=True)
-                    
-                    # Kill children first (mysqldump/pg_dump processes)
-                    for child in children:
-                        try:
-                            print(f"   Killing child process PID: {child.pid}")
-                            child.kill()
-                        except Exception as e:
-                            print(f"   ⚠️ Error killing child {child.pid}: {e}")
-                    
-                    # Kill parent process
-                    parent.kill()
-                    print(f"✅ Killed process PID: {pid}")
-                    
-                except ImportError:
-                    # Fallback if psutil not installed
-                    import signal
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
-                    print(f"✅ Killed process group PID: {pid}")
-                    
-                except psutil.NoSuchProcess:
-                    print(f"⚠️ Process {pid} no longer exists")
-                except Exception as e:
-                    print(f"⚠️ Error killing process tree: {e}")
-                
-                # Update the history record to CANCELLED
-                history.status = 'cancelled'
-                history.is_cancelled = True
-                history.cancelled_at = datetime.now()
-                history.cancelled_by = 'User'
-                history.message = 'Job cancelled by user (process killed)'
-                db.session.commit()
-                print(f"✅ Job {key} marked as CANCELLED in database")
-                
-                # Clean up the process info
-                with running_backup_processes_lock:
-                    if key in running_backup_processes:
-                        del running_backup_processes[key]
-                
-                return True
-                
-            except Exception as e:
-                print(f"❌ Error killing process: {e}")
-                # Still mark as cancelled even if process kill fails
-                history.status = 'cancelled'
-                history.is_cancelled = True
-                history.cancelled_at = datetime.now()
-                history.cancelled_by = 'User'
-                history.message = f'Job cancelled by user (process kill failed: {str(e)})'
-                db.session.commit()
-                return True
+        # Kill the main process if found
+        if pid:
+            print(f"🛑 Attempting to kill main process PID: {pid}")
+            
+            # Kill the process tree
+            kill_result = kill_process_tree(pid)
+            
+            if kill_result:
+                print(f"✅ Main process killed successfully")
+            else:
+                print(f"⚠️ Main process kill may have failed")
+            
+            # Clean up the process info
+            with running_backup_processes_lock:
+                if key in running_backup_processes:
+                    del running_backup_processes[key]
+                    print(f"🧹 Removed process info for {key}")
+        else:
+            print(f"⚠️ No main process found for job {key}")
         
-        # If no process found, still mark as cancelled
+        # Update the history record to CANCELLED
         history.status = 'cancelled'
         history.is_cancelled = True
         history.cancelled_at = datetime.now()
         history.cancelled_by = 'User'
-        history.message = 'Job cancelled by user (no process found)'
+        history.message = f'Job cancelled by user (killed {child_killed} child processes)'
         db.session.commit()
-        print(f"✅ Job {key} marked as CANCELLED in database (no process found)")
         
-        # Clean up process info if exists
-        with running_backup_processes_lock:
-            if key in running_backup_processes:
-                del running_backup_processes[key]
+        print(f"✅ Job {key} marked as CANCELLED in database")
+        
+        # Clear cancellation flag after a delay
+        import threading
+        def clear_flag():
+            import time
+            time.sleep(5)
+            clear_cancellation_flag(job_id, trigger_source)
+        threading.Thread(target=clear_flag, daemon=True).start()
         
         return True
     
@@ -797,11 +1068,18 @@ def run_backup_job(job_id, trigger_source='manual'):
             # Clear cancellation flag
             clear_cancellation_flag(job_id, trigger_source)
 
-            # Send notification only if not cancelled
-            if history.status != 'cancelled':
-                if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
-                    send_notification_email(job, history, schedule_targets, success, message, database_results)
-            
+            # # Send notification only if not cancelled
+            # if history.status != 'cancelled':
+            #     if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
+            #         send_notification_email(job, history, schedule_targets, success, message, database_results)
+            # Send notification based on status
+            if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
+                if history.status == 'cancelled':
+                    # Send cancellation notification
+                    send_cancellation_email(job, history, schedule_targets, database_results, success)
+                else:
+                    # Send normal success/failure notification
+                    send_notification_email(job, history, schedule_targets, success, message, database_results)        
     except Exception as e:
         print(f"💥 Critical error in run_backup_job for job {job_id} ({trigger_source}): {e}")
         import traceback
@@ -1087,6 +1365,168 @@ def build_backup_report_text(job, history, schedule_label, database_results, pre
 
     return "\n".join(lines)
 
+def send_cancellation_email(job, history, schedule_targets, database_results, success):
+    """Send a cancellation email notification."""
+    try:
+        smtp_config = get_smtp_config(job)
+        if not smtp_config['host'] or not smtp_config['receiver_email'] or not smtp_config['from_email']:
+            print("⚠️ SMTP configuration is incomplete. Skipping cancellation email.")
+            return
+
+        schedule_label = get_email_schedule_label(schedule_targets)
+        subject = f"{schedule_label} backup CANCELLED - {job.name}"
+        
+        # Build HTML body for cancellation
+        html_body = build_cancellation_email_html(job, history, schedule_label, database_results)
+        text_body = build_cancellation_email_text(job, history, schedule_label, database_results)
+
+        email_message = MIMEMultipart('alternative')
+        email_message['Subject'] = subject
+        email_message['From'] = formataddr((smtp_config['from_name'], smtp_config['from_email']))
+        email_message['To'] = smtp_config['receiver_email']
+
+        email_message.attach(MIMEText(text_body, 'plain'))
+        email_message.attach(MIMEText(html_body, 'html'))
+
+        if smtp_config['use_ssl']:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(smtp_config['host'], smtp_config['port'], context=context) as server:
+                login_and_send(server, smtp_config, email_message)
+        else:
+            with smtplib.SMTP(smtp_config['host'], smtp_config['port']) as server:
+                server.ehlo()
+                if smtp_config['use_tls']:
+                    context = ssl.create_default_context()
+                    server.starttls(context=context)
+                    server.ehlo()
+                login_and_send(server, smtp_config, email_message)
+
+        print(f"📧 Cancellation email sent to: {smtp_config['receiver_email']}")
+    except Exception as e:
+        print(f"⚠️ Error sending cancellation email: {e}")
+        
+def build_cancellation_email_html(job, history, schedule_label, database_results):
+    """Build HTML body for cancellation email."""
+    summary = summarize_database_results(database_results)
+    status_rows = ''.join(
+        [
+            (
+                "<tr>"
+                f"<td style=\"padding:10px;border:1px solid #d9d9d9;\">{html.escape(item.get('database', 'Unknown'))}</td>"
+                f"<td style=\"padding:10px;border:1px solid #d9d9d9;color:{'#0a8f08' if item.get('status') == 'success' else '#c62828' if item.get('status') == 'failed' else '#856404'};font-weight:700;\">"
+                f"{html.escape(item.get('status', 'unknown').capitalize())}</td>"
+                "</tr>"
+            )
+            for item in database_results
+        ]
+    )
+
+    if not status_rows:
+        status_rows = (
+            "<tr><td style=\"padding:10px;border:1px solid #d9d9d9;\">No database rows available</td>"
+            "<td style=\"padding:10px;border:1px solid #d9d9d9;\">N/A</td></tr>"
+        )
+
+    return f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; background:#ffffff; color:#222; padding:20px;">
+        <div style="max-width:760px; margin:0 auto;">
+          <h2 style="text-align:center; margin-bottom:24px; color:#856404;">⛔ {html.escape(schedule_label)} Backup CANCELLED</h2>
+          
+          <div style="background:#fff3cd; border:1px solid #ffc107; border-radius:8px; padding:15px; margin-bottom:20px;">
+            <p style="margin:0; font-weight:700; color:#856404;">
+              ⚠️ The backup was cancelled by the user at {history.cancelled_at.strftime('%Y-%m-%d %H:%M:%S') if history.cancelled_at else 'Unknown time'}.
+            </p>
+          </div>
+
+          <table style="width:100%; border-collapse:collapse; margin-bottom:24px;">
+            <thead>
+              <tr style="background:#f2f2f2;">
+                <th style="padding:10px; border:1px solid #d9d9d9; text-align:left;">Database Name</th>
+                <th style="padding:10px; border:1px solid #d9d9d9; text-align:center;">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status_rows}
+              <tr>
+                <td colspan="2" style="padding:10px; border:1px solid #d9d9d9; text-align:center;">
+                  <strong>Summary:</strong> {summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <table style="width:100%; border-collapse:collapse; margin-bottom:16px;">
+            <thead>
+              <tr style="background:#f2f2f2;">
+                <th style="padding:10px; border:1px solid #d9d9d9;">Job Details</th>
+                <th style="padding:10px; border:1px solid #d9d9d9;">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Job Name</strong></td>
+                <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(job.name)}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Started At</strong></td>
+                <td style="padding:10px; border:1px solid #d9d9d9;">{history.start_time.strftime('%Y-%m-%d %H:%M:%S')}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Schedule Type</strong></td>
+                <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(schedule_label)}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Storage Location</strong></td>
+                <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(job.storage_location.name)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p style="text-align:center; margin-top:20px; color:#856404;">
+            <strong>⚠️ Backup was cancelled. No further action was taken.</strong>
+          </p>
+          <p style="text-align:center; margin-top:10px; font-size:12px; color:#6c757d;">
+            Log file available at: {html.escape(history.log_path or 'No log file available')}
+          </p>
+        </div>
+      </body>
+    </html>
+    """
+
+
+def build_cancellation_email_text(job, history, schedule_label, database_results):
+    """Build plain text body for cancellation email."""
+    summary = summarize_database_results(database_results)
+    lines = [
+        f"⛔ {schedule_label} Backup CANCELLED",
+        "=" * 50,
+        "",
+        f"⚠️ The backup was cancelled by the user at {history.cancelled_at.strftime('%Y-%m-%d %H:%M:%S') if history.cancelled_at else 'Unknown time'}.",
+        "",
+        "Database Status:",
+    ]
+
+    for item in database_results:
+        lines.append(f"- {item.get('database', 'Unknown')}: {item.get('status', 'unknown').capitalize()}")
+
+    lines.extend(
+        [
+            "",
+            f"Summary: {summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases",
+            "",
+            "Job Details:",
+            f"  Job Name: {job.name}",
+            f"  Started At: {history.start_time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"  Schedule Type: {schedule_label}",
+            f"  Storage Location: {job.storage_location.name}",
+            "",
+            "⚠️ Backup was cancelled. No further action was taken.",
+            f"Log file available at: {history.log_path or 'No log file available'}",
+        ]
+    )
+
+    return "\n".join(lines)
 def format_bytes(size):
     if size is None:
         return "N/A"

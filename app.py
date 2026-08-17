@@ -1509,6 +1509,55 @@ def debug_running_jobs():
         'database_running': db_info
     })
 
+@app.route('/debug/all-processes')
+def debug_all_processes():
+    """Debug endpoint to check all running processes"""
+    from scheduler import running_backup_processes, running_backup_processes_lock
+    from scheduler import running_child_processes, running_child_processes_lock
+    import psutil
+    
+    result = {
+        'main_processes': {},
+        'child_processes': {},
+        'system_mysqldump': []
+    }
+    
+    # Main processes
+    with running_backup_processes_lock:
+        for key, info in running_backup_processes.items():
+            result['main_processes'][key] = {
+                'pid': info.get('pid'),
+                'pgid': info.get('pgid'),
+                'started_at': info.get('started_at', '').isoformat() if info.get('started_at') else None
+            }
+    
+    # Child processes
+    with running_child_processes_lock:
+        for key, children in running_child_processes.items():
+            result['child_processes'][key] = []
+            for child in children:
+                result['child_processes'][key].append({
+                    'pid': child.get('pid'),
+                    'pgid': child.get('pgid'),
+                    'started_at': child.get('started_at', '').isoformat() if child.get('started_at') else None
+                })
+    
+    # System mysqldump processes
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if 'mysqldump' in proc.info['name'] or (proc.info['cmdline'] and 'mysqldump' in ' '.join(proc.info['cmdline'])):
+                    result['system_mysqldump'].append({
+                        'pid': proc.info['pid'],
+                        'cmdline': ' '.join(proc.info['cmdline'])[:100]
+                    })
+            except:
+                pass
+    except:
+        pass
+    
+    return jsonify(result)
+
 @app.route('/test/scheduler/<int:job_id>')
 def test_scheduler(job_id):
     """Test if scheduler can trigger a specific job"""

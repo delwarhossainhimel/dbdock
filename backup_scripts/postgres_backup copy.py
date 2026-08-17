@@ -12,12 +12,11 @@ from job_schedules import get_enabled_schedule_types, get_schedule_retention, no
 def postgres_backup(server, databases, location, folder_path, schedule_types, job_id=None, schedule_type=None):
     """
     PostgreSQL backup with process tracking for cancellation
-    Each database is: dumped -> compressed -> uploaded -> cleaned up
     """
     print(f"🔍 DEBUG: postgres_backup called with schedule_type={schedule_type}, job_id={job_id}")
-
+    
     # Get the scheduler module to register processes
-    from scheduler import register_backup_process, unregister_backup_process, register_child_process, unregister_child_process, is_job_cancelled
+    from scheduler import register_backup_process, unregister_backup_process
     
     # Create job and schedule-specific tmp directory
     job_tmp_dir = create_job_tmp_directory(job_id, schedule_type)
@@ -27,9 +26,7 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         print(f"Job temporary directory: {job_tmp_dir}")
         
         # Check if 'all' is selected - auto-detect databases
-        is_all_databases = False
         if 'all' in databases or '__all__' in databases:
-            is_all_databases = True
             print("🔄 Auto-detecting all databases from PostgreSQL server...")
             databases = get_all_postgres_databases(server)
             if not databases:
@@ -58,32 +55,14 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         
         # Track results for each database
         database_results = []
-        all_backup_files = []
+        all_backup_files = []  # Track ALL successfully created files
         total_success = 0
         total_failed = 0
-        total_cancelled = 0
         uploaded_files = []
         total_size = 0
-        was_cancelled = False
         
         # Process each database one by one
         for database in valid_databases:
-            # CHECK CANCELLATION BEFORE PROCESSING EACH DATABASE
-            if is_job_cancelled(job_id, schedule_type):
-                was_cancelled = True
-                print(f"🛑 Backup cancelled by user, stopping after {database}")
-                # Mark remaining databases as cancelled
-                remaining_databases = valid_databases[valid_databases.index(database):]
-                for remaining_db in remaining_databases:
-                    database_results.append({
-                        'database': remaining_db,
-                        'status': 'cancelled',
-                        'message': 'Skipped - backup cancelled by user',
-                        'file_size': 0,
-                    })
-                    total_cancelled += 1
-                break
-            
             print(f"\n{'='*60}")
             print(f"📦 Processing database: {database}")
             print(f"{'='*60}")
@@ -129,16 +108,8 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                 # Register the process for cancellation
                 register_backup_process(job_id, schedule_type, process, None)
                 
-                # If this is an "All Databases" run, also register as a child
-                if is_all_databases:
-                    register_child_process(job_id, schedule_type, process)
-                
                 # Wait for the process to complete
                 stdout, stderr = process.communicate()
-                
-                # Unregister child process if it was registered
-                if is_all_databases and process:
-                    unregister_child_process(job_id, schedule_type, process)
                 
                 if process.returncode == 0:
                     dump_success = True
@@ -156,9 +127,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
             finally:
                 # Unregister the process
                 unregister_backup_process(job_id, schedule_type)
-                # Unregister child process if it was registered
-                if is_all_databases and process:
-                    unregister_child_process(job_id, schedule_type, process)
             
             # If dump failed, record failure and continue to next database
             if not dump_success:
@@ -174,11 +142,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                 if os.path.exists(sql_filepath):
                     os.remove(sql_filepath)
                     print(f"   🗑️ Removed partial dump file")
-                # Check if cancelled before continuing
-                if is_job_cancelled(job_id, schedule_type):
-                    was_cancelled = True
-                    print(f"🛑 Backup cancelled by user, stopping after {database}")
-                    break
                 continue
             
             # Step 2: Compress .sql to .sql.gz
@@ -221,11 +184,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                     os.remove(sql_filepath)
                 if os.path.exists(gz_filepath):
                     os.remove(gz_filepath)
-                # Check if cancelled before continuing
-                if is_job_cancelled(job_id, schedule_type):
-                    was_cancelled = True
-                    print(f"🛑 Backup cancelled by user, stopping after {database}")
-                    break
                 continue
             
             # Step 3: Upload to storage
@@ -259,8 +217,10 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                             uploaded_path = upload_result[2] if upload_result[2] else gz_filename
                             print(f"   ✅ Uploaded successfully: {uploaded_path}")
                             
-                            # Add to uploaded files list
+                            # CRITICAL: Add to all_backup_files for tracking
                             all_backup_files.append((gz_filepath, gz_filename))
+                            
+                            # Track uploaded files
                             total_size += compressed_size
                             uploaded_files.append(uploaded_path)
                         else:
@@ -306,22 +266,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
                 print(f"   ⚠️ Error cleaning up: {e}")
             
             print(f"✅ Finished processing database: {database}")
-            
-            # CHECK CANCELLATION AFTER EACH DATABASE
-            if is_job_cancelled(job_id, schedule_type):
-                was_cancelled = True
-                print(f"🛑 Backup cancelled by user, stopping after {database}")
-                # Mark remaining databases as cancelled
-                remaining_databases = valid_databases[valid_databases.index(database) + 1:]
-                for remaining_db in remaining_databases:
-                    database_results.append({
-                        'database': remaining_db,
-                        'status': 'cancelled',
-                        'message': 'Skipped - backup cancelled by user',
-                        'file_size': 0,
-                    })
-                    total_cancelled += 1
-                break
         
         # Clean up the temporary directory
         print(f"\n🧹 Cleaning up temporary directory: {job_tmp_dir}")
@@ -340,16 +284,6 @@ def postgres_backup(server, databases, location, folder_path, schedule_types, jo
         # Build the final result
         uploaded_files_str = ";".join(uploaded_files) if uploaded_files else None
         
-        # Handle cancellation
-        if was_cancelled:
-            skipped = len(valid_databases) - total_success - total_failed - total_cancelled
-            if total_success > 0 or total_failed > 0:
-                message = f"Backup cancelled by user after {total_success} successful, {total_failed} failed, {skipped} skipped"
-            else:
-                message = "Backup cancelled by user before completion"
-            return False, message, uploaded_files_str, total_size, database_results
-        
-        # Normal completion
         if total_failed == 0 and total_success > 0:
             message = f"Successfully backed up all {total_success} databases"
             return True, message, uploaded_files_str, total_size, database_results
