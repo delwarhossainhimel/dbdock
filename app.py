@@ -448,6 +448,56 @@ def database_servers():
         return redirect(url_for('database_servers'))
     
     servers = DatabaseServer.query.all()
+    
+    # Add status information to each server
+    for server in servers:
+        # Get all backup jobs using this server
+        jobs = BackupJob.query.filter_by(database_server_id=server.id).all()
+        job_ids = [job.id for job in jobs]
+        
+        server.status = 'no_jobs'  # Default
+        server.status_message = 'No backup jobs using this server'
+        server.job_count = len(jobs)
+        
+        if jobs:
+            # Get the latest history for each job
+            latest_histories = []
+            for job in jobs:
+                latest = BackupHistory.query.filter_by(
+                    backup_job_id=job.id
+                ).order_by(BackupHistory.start_time.desc()).first()
+                if latest:
+                    latest_histories.append(latest)
+            
+            if latest_histories:
+                # Check if any job is running
+                running = any(h.status == 'running' for h in latest_histories)
+                # Check if any job failed
+                failed = any(h.status == 'failed' for h in latest_histories)
+                # Check if all jobs succeeded
+                all_success = all(h.status == 'success' for h in latest_histories)
+                # Check if any job was cancelled
+                cancelled = any(h.status == 'cancelled' for h in latest_histories)
+                
+                if running:
+                    server.status = 'running'
+                    server.status_message = f'{sum(1 for h in latest_histories if h.status == "running")} job(s) currently running'
+                elif failed:
+                    server.status = 'failed'
+                    server.status_message = f'{sum(1 for h in latest_histories if h.status == "failed")} job(s) failed'
+                elif all_success:
+                    server.status = 'healthy'
+                    server.status_message = f'All {len(latest_histories)} job(s) successful'
+                elif cancelled:
+                    server.status = 'cancelled'
+                    server.status_message = f'{sum(1 for h in latest_histories if h.status == "cancelled")} job(s) cancelled'
+                else:
+                    server.status = 'unknown'
+                    server.status_message = 'Unknown status'
+            else:
+                server.status = 'no_runs'
+                server.status_message = 'No backup runs yet'
+    
     return render_template('database_servers.html', servers=servers)
 
 @app.route('/delete_server/<int:server_id>', methods=['POST'])
@@ -467,6 +517,7 @@ def delete_server(server_id):
     db.session.commit()
     
     return jsonify({'success': True, 'message': 'Server deleted successfully'})
+
 
 @app.route('/edit_server/<int:server_id>', methods=['GET'])
 def edit_server(server_id):
@@ -502,6 +553,7 @@ def test_connection(server_id):
     server = DatabaseServer.query.get_or_404(server_id)
     success, message = server.test_connection()
     return jsonify({'success': success, 'message': message})
+
 
 # ============================================
 # STORAGE LOCATIONS ROUTES

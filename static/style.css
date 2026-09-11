@@ -1,3 +1,6 @@
+/* ============================================================ */
+/* CSS Variables */
+/* ============================================================ */
 :root {
     --bg: #f4f7fb;
     --surface: #ffffff;
@@ -23,6 +26,9 @@
     --radius-sm: 10px;
 }
 
+/* ============================================================ */
+/* Base Styles */
+/* ============================================================ */
 html,
 body {
     font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", Arial, sans-serif;
@@ -44,7 +50,9 @@ a {
     max-width: 1180px;
 }
 
+/* ============================================================ */
 /* Cards */
+/* ============================================================ */
 .card {
     border: 1px solid rgba(201, 213, 229, 0.85);
     border-radius: var(--radius-lg);
@@ -74,7 +82,9 @@ button {
     font-size: 0.96rem;
 }
 
+/* ============================================================ */
 /* Forms */
+/* ============================================================ */
 .form-control,
 .form-select {
     border-color: var(--line-strong);
@@ -91,7 +101,9 @@ button {
     box-shadow: 0 0 0 4px rgba(19, 103, 209, 0.12);
 }
 
+/* ============================================================ */
 /* Buttons */
+/* ============================================================ */
 .btn {
     border-radius: 999px;
     font-weight: 600;
@@ -136,7 +148,9 @@ button {
     border-color: rgba(196, 64, 80, 0.24);
 }
 
-/* Status Badges */
+/* ============================================================ */
+/* Status Badges (for job history) */
+/* ============================================================ */
 .status-badge {
     display: inline-flex;
     align-items: center;
@@ -163,17 +177,9 @@ button {
     color: var(--warning-text);
 }
 
-/* Cancelled status */
 .status-cancelled {
     background-color: #e9ecef;
     color: #6c757d;
-}
-
-/* Or if you want a different color */
-.status-cancelled {
-    background-color: #f8f9fa;
-    color: #495057;
-    border: 1px solid #dee2e6;
 }
 
 .status-inactive {
@@ -181,7 +187,9 @@ button {
     color: #5b697d;
 }
 
+/* ============================================================ */
 /* Backup Job Cards */
+/* ============================================================ */
 .backup-job-card .card-body {
     padding: 1.05rem 1.1rem;
 }
@@ -326,7 +334,9 @@ button {
     border-style: dashed;
 }
 
+/* ============================================================ */
 /* Navigation */
+/* ============================================================ */
 .app-navbar {
     background: linear-gradient(180deg, #202834 0%, var(--nav-bg) 100%);
     border-bottom: 1px solid var(--nav-line);
@@ -398,7 +408,9 @@ button {
     background: rgba(196, 64, 80, 0.15);
 }
 
+/* ============================================================ */
 /* Main Content */
+/* ============================================================ */
 .app-main {
     flex: 1;
     padding: 2rem 0 3rem;
@@ -444,7 +456,9 @@ button {
     text-align: center;
 }
 
+/* ============================================================ */
 /* Login */
+/* ============================================================ */
 .login-shell {
     width: 100%;
 }
@@ -566,7 +580,9 @@ button {
     margin-bottom: 1rem;
 }
 
+/* ============================================================ */
 /* Dashboard */
+/* ============================================================ */
 .dashboard-hero {
     margin-bottom: 1.75rem;
     padding: 1.75rem 2rem;
@@ -658,19 +674,25 @@ button {
     vertical-align: middle;
 }
 
+/* ============================================================ */
 /* Alerts */
+/* ============================================================ */
 .alert {
     border-radius: 14px;
     box-shadow: 0 10px 26px rgba(23, 43, 77, 0.08);
 }
 
+/* ============================================================ */
 /* Tables */
+/* ============================================================ */
 .table th,
 .table td {
     border-color: var(--line);
 }
 
+/* ============================================================ */
 /* Form Sections */
+/* ============================================================ */
 .form-section {
     background-color: white;
     padding: 1.5rem;
@@ -679,7 +701,9 @@ button {
     box-shadow: var(--shadow-card);
 }
 
+/* ============================================================ */
 /* Reports */
+/* ============================================================ */
 .reports-pagination {
     display: flex;
     align-items: center;
@@ -702,7 +726,9 @@ button {
     gap: 0.75rem;
 }
 
+/* ============================================================ */
 /* Backup Log */
+/* ============================================================ */
 .backup-log-view {
     margin: 0;
     padding: 1rem 1.1rem;
@@ -719,7 +745,9 @@ button {
     overflow: auto;
 }
 
+/* ============================================================ */
 /* Responsive */
+/* ============================================================ */
 @media (min-width: 768px) {
     .app-navbar-inner {
         gap: 0.85rem;
@@ -796,6 +824,14 @@ button {
     .login-card-body {
         padding: 1.35rem;
     }
+    
+    .dashboard-stats .col-md-3 {
+        margin-bottom: 1rem;
+    }
+    
+    .dashboard-stat-card .card-body {
+        align-items: stretch;
+    }
 }
 
 @media (max-width: 991.98px) {
@@ -831,7 +867,9 @@ button {
     }
 }
 
+/* ============================================================ */
 /* Compact Job List Styles */
+/* ============================================================ */
 .job-item {
     margin-bottom: 0.5rem;
 }
@@ -858,7 +896,7 @@ button {
     background-color: #28a745;
 }
 
-.status-inactive {
+.status-inactive-dot {
     background-color: #6c757d;
 }
 
@@ -876,24 +914,6 @@ button {
     border-radius: 0 0 0.25rem 0.25rem;
 }
 
-.status-badge {
-    font-size: 0.7rem;
-    padding: 0.2rem 0.5rem;
-}
-
-.btn-group .btn {
-    padding: 0.15rem 0.4rem;
-    font-size: 0.8rem;
-}
-
-.backup-details {
-    font-size: 0.9rem;
-}
-
-.backup-details .text-muted {
-    font-size: 0.85rem;
-}
-
 .pagination {
     margin-bottom: 0;
 }
@@ -902,7 +922,10 @@ button {
     padding: 0.25rem 0.75rem;
     font-size: 0.9rem;
 }
-/* Status Cards */
+
+/* ============================================================ */
+/* Status Cards (Dashboard) */
+/* ============================================================ */
 .status-card-success {
     border-left: 4px solid #28a745 !important;
 }
@@ -917,13 +940,6 @@ button {
 
 .status-card-info {
     border-left: 4px solid #17a2b8 !important;
-}
-
-.dashboard-stat-value {
-    font-size: clamp(2rem, 3vw, 2.8rem);
-    font-weight: 800;
-    letter-spacing: -0.05em;
-    margin: 0;
 }
 
 /* Text colors */
@@ -943,25 +959,104 @@ button {
     color: #0c8b9c !important;
 }
 
-/* Dashboard stats row */
-.dashboard-stats .card {
-    height: 100%;
+/* ============================================================ */
+/* Database Server Status Indicators                            */
+/* ============================================================ */
+.status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-left: 8px;
+    vertical-align: middle;
+    position: relative;
 }
 
-.dashboard-stat-card .card-body {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.85rem;
+/* Pulsing animation for running status */
+.status-running-dot {
+    background-color: #ffc107;
+    box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.7);
+    animation: pulse-warning 1.5s infinite;
 }
 
-/* Responsive adjustments for stats cards */
-@media (max-width: 767px) {
-    .dashboard-stats .col-md-3 {
-        margin-bottom: 1rem;
+@keyframes pulse-warning {
+    0% {
+        box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.7);
     }
-    
-    .dashboard-stat-card .card-body {
-        align-items: stretch;
+    70% {
+        box-shadow: 0 0 0 8px rgba(255, 193, 7, 0);
     }
+    100% {
+        box-shadow: 0 0 0 0 rgba(255, 193, 7, 0);
+    }
+}
+
+/* Healthy - Green */
+.status-healthy {
+    background-color: #28a745;
+    box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7);
+    animation: pulse-success 2s infinite;
+}
+
+@keyframes pulse-success {
+    0% {
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 8px rgba(40, 167, 69, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
+    }
+}
+
+/* Failed - Red */
+.status-failed-dot {
+    background-color: #dc3545;
+    box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
+    animation: pulse-danger 1.5s infinite;
+}
+
+@keyframes pulse-danger {
+    0% {
+        box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 8px rgba(220, 53, 69, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(220, 53, 69, 0);
+    }
+}
+
+/* Cancelled - Gray */
+.status-cancelled-dot {
+    background-color: #6c757d;
+}
+
+/* No runs - Blue */
+.status-no-runs {
+    background-color: #17a2b8;
+}
+
+/* No jobs - Light gray */
+.status-no-jobs {
+    background-color: #e9ecef;
+    border: 1px solid #dee2e6;
+}
+
+/* Server card hover effect */
+.server-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.server-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+}
+
+/* Status info badge */
+.status-info .badge {
+    font-size: 0.75rem;
+    padding: 0.4em 0.7em;
 }
