@@ -28,10 +28,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        > /etc/apt/sources.list.d/pgdg.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-       postgresql-client-17 \
+       postgresql-client-18 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+ARG MYSQL56_VERSION=5.6.51
+ARG MYSQL56_URL=https://downloads.mysql.com/archives/get/p/23/file/mysql-5.6.51-linux-glibc2.12-x86_64.tar.gz
+
+RUN mkdir -p /opt/mysql56 \
+    && cd /tmp \
+    && wget -q "${MYSQL56_URL}" -O mysql56.tar.gz \
+    && tar -xzf mysql56.tar.gz \
+    && mv mysql-5.6.51-linux-glibc2.12-x86_64/* /opt/mysql56/ \
+    && rm -rf mysql56.tar.gz mysql-5.6.51-linux-glibc2.12-x86_64
+
+# Create dedicated MySQL 5.6 mysqldump command
+RUN ln -s /opt/mysql56/bin/mysqldump /usr/local/bin/mysqldump56 \
+    && ln -s /opt/mysql56/bin/mysql /usr/local/bin/mysql56
 # Install Python deps
 COPY requirements.txt .
 

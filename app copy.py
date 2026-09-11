@@ -468,6 +468,7 @@ def delete_server(server_id):
     
     return jsonify({'success': True, 'message': 'Server deleted successfully'})
 
+
 @app.route('/edit_server/<int:server_id>', methods=['GET'])
 def edit_server(server_id):
     try:

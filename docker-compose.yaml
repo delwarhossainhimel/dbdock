@@ -13,40 +13,40 @@ services:
       - "3306:3306"
     volumes:
       - db_data:/var/lib/mysql
-  # dbdock:
-  #   image: dbdock
-  #   container_name: dbdock
+  dbdock:
+    image: delwarhossainhimel/dbdock:2.0.1
+    container_name: dbdock
 
-  #   environment:
-  #     MYSQL_HOST: "192.168.60.105"
-  #     MYSQL_PORT: "3306"
-  #     MYSQL_USER: "root"
-  #     MYSQL_PASSWORD: "example"
-  #     MYSQL_DATABASE: "dbdock"
-  #     MYSQL_CHARSET: "utf8mb4"
+    environment:
+      MYSQL_HOST: "192.168.60.105"
+      MYSQL_PORT: "3306"
+      MYSQL_USER: "root"
+      MYSQL_PASSWORD: "example"
+      MYSQL_DATABASE: "dbdock"
+      MYSQL_CHARSET: "utf8mb4"
 
-  #     JOB_TIMEOUT_HOURS: "48"
+      JOB_TIMEOUT_HOURS: "48"
 
-  #     SECRET_KEY: "your-very-secret-key"
-  #     ADMIN_USER: "admin"
-  #     ADMIN_PASS: "password123"
+      SECRET_KEY: "your-very-secret-key"
+      ADMIN_USER: "admin"
+      ADMIN_PASS: "password123"
 
-  #     SMTP_HOST: "smtp.imhimel.com"
-  #     SMTP_PORT: "587"
-  #     SMTP_USER: "himel@imhimel.com"
-  #     SMTP_PASS: "123456789"
-  #     SMTP_FROM_NAME: "Infra Notification"
-  #     SMTP_FROM_EMAIL: "himel@imhimel.com"
-  #     SMTP_RECEIVER_EMAIL: ""
-  #     SMTP_USE_TLS: "true"
-  #     SMTP_USE_SSL: "false"
+      SMTP_HOST: "smtp.imhimel.com"
+      SMTP_PORT: "587"
+      SMTP_USER: "himel@imhimel.com"
+      SMTP_PASS: "123456789"
+      SMTP_FROM_NAME: "Infra Notification"
+      SMTP_FROM_EMAIL: "himel@imhimel.com"
+      SMTP_RECEIVER_EMAIL: ""
+      SMTP_USE_TLS: "true"
+      SMTP_USE_SSL: "false"
 
-  #   ports:
-  #     - "5000:5000"
+    ports:
+      - "5000:5000"
 
-  #   volumes:
-  #     - ./backupdatabase:/app/backupdatabase
-  #     - ./tmp:/app/tmp
-  #     - ./backup_logs:/app/backup_logs
+    volumes:
+      - ./backupdatabase:/app/backupdatabase
+      - ./tmp:/app/tmp
+      - ./backup_logs:/app/backup_logs
 volumes:
   db_data:
