@@ -9,6 +9,70 @@ from .storage_providers import get_storage_provider
 from .utils import create_job_tmp_directory, cleanup_job_tmp_directory, create_full_folder_path
 from job_schedules import get_enabled_schedule_types, get_schedule_retention, normalize_schedule_config
 
+def get_mysql_version(server):
+    """
+    Get MySQL/MariaDB server version.
+    Returns version string, e.g. '5.6.51' or '8.0.36'
+    """
+    try:
+        import mysql.connector
+
+        conn = mysql.connector.connect(
+            host=server.host,
+            port=server.port,
+            user=server.username,
+            password=server.password,
+            connect_timeout=10
+        )
+
+        cursor = conn.cursor()
+        cursor.execute("SELECT VERSION()")
+        result = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if result:
+            version = result[0]
+            print(f"🔍 MySQL server version: {version}")
+            return version
+
+        return None
+
+    except Exception as e:
+        print(f"⚠️ Could not determine MySQL server version: {e}")
+        return None
+
+def get_mysqldump_binary(server):
+    """
+    Select the appropriate mysqldump binary based on the
+    database server version.
+    """
+
+    version = get_mysql_version(server)
+
+    if not version:
+        raise RuntimeError(
+            "Unable to determine MySQL server version"
+        )
+
+    # Remove MariaDB suffix if present
+    version_clean = version.lower().replace("-mariadb", "")
+
+    if version_clean.startswith("5.6."):
+        binary = "mysqldump56"
+    else:
+        binary = "mysqldump"
+
+    if shutil.which(binary) is None:
+        raise RuntimeError(
+            f"Required mysqldump binary '{binary}' is not installed"
+        )
+
+    print(f"🔧 MySQL server version: {version}")
+    print(f"🔧 Selected dump client: {binary}")
+
+    return binary
 
 def mysql_backup(server, databases, location, folder_path, schedule_types, job_id=None, schedule_type=None):
     """
@@ -96,10 +160,10 @@ def mysql_backup(server, databases, location, folder_path, schedule_types, job_i
             sql_filepath = os.path.join(job_tmp_dir, sql_filename)
             
             print(f"📝 Step 1: Dumping database '{database}' to {sql_filename}...")
-            
+            mysqldump_binary = get_mysqldump_binary(server)
             # Run mysqldump to create .sql file
             cmd = [
-                'mysqldump',
+                mysqldump_binary,
                 f'-h{server.host}',
                 f'-P{server.port}',
                 f'-u{server.username}',

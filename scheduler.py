@@ -14,15 +14,20 @@ from job_schedules import (
     apscheduler_dow_to_cron,  # ← ADD THIS (optional)
     cron_dow_to_display,      # ← ADD THIS (optional)
 )
+
+# Email notifications have been extracted into their own module.
+from email_notifications import (
+    send_notification_email,
+    send_cancellation_email,
+    send_test_email,
+)
+
 import json
 from datetime import datetime, timedelta, timezone
 import atexit
 from contextlib import redirect_stderr, redirect_stdout
 import fcntl
-import html
 import os
-import smtplib
-import ssl
 import sys
 import time
 import threading
@@ -30,9 +35,6 @@ import uuid
 import signal
 import psutil
 import tempfile
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.utils import formataddr
 from log_rotation import rotate_log, cleanup_old_rotated_logs
 
 
@@ -55,6 +57,7 @@ running_backup_processes_lock = threading.Lock()
 running_child_processes = {}
 running_child_processes_lock = threading.Lock()
 
+
 class TeeStream:
     def __init__(self, *streams):
         self.streams = streams
@@ -68,6 +71,8 @@ class TeeStream:
     def flush(self):
         for stream in self.streams:
             stream.flush()
+
+
 class SafeTeeStream:
     def __init__(self, *streams):
         self.streams = []
@@ -99,6 +104,8 @@ class SafeTeeStream:
             except (ValueError, OSError, AttributeError):
                 pass
         self.streams = valid_streams
+
+
 def get_lock_dir():
     """Get a safe directory for lock files"""
     lock_dir = '/tmp'
@@ -107,19 +114,94 @@ def get_lock_dir():
     return lock_dir
 
 
+def commit_with_retry(session, instance=None, max_retries=3, delay=2):
+    """
+    Commit a SQLAlchemy session with retry logic for dead connections.
+
+    Handles 'MySQL server has gone away' / broken pipe errors by:
+      1. rolling back the failed transaction,
+      2. disposing the dead connection pool,
+      3. re-merging the given `instance` (if any) into a fresh session,
+      4. retrying the commit.
+
+    Args:
+        session:     The SQLAlchemy scoped session (typically `db.session`).
+        instance:    Optional ORM instance whose pending changes must survive
+                     the retry. It is re-merged into the session on every
+                     retry so updates are not lost when the session is reset.
+        max_retries: Number of commit attempts before giving up.
+        delay:       Seconds to sleep between retries.
+    """
+    from models import db
+    import time as _time
+
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            session.commit()
+            return True
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            is_connection_error = any(
+                marker in err_str
+                for marker in (
+                    "MySQL server has gone away",
+                    "Broken pipe",
+                    "server has gone away",
+                    "Lost connection",
+                    "Connection reset",
+                    "2006",
+                    "2013",
+                )
+            )
+            print(f"⚠️ Commit attempt {attempt}/{max_retries} failed: {e}")
+
+            try:
+                session.rollback()
+            except Exception:
+                pass
+
+            if not is_connection_error:
+                # Non-connection error: don't retry, re-raise
+                raise
+
+            # Drop the dead session and pooled connections
+            try:
+                db.session.remove()
+                db.engine.dispose()
+                print("🔌 Disposed dead DB connections, will retry with fresh connection")
+            except Exception as disp_err:
+                print(f"⚠️ Error disposing engine: {disp_err}")
+
+            # Re-attach the instance to the new session so pending
+            # changes are not lost when the session was removed.
+            if instance is not None:
+                try:
+                    instance = session.merge(instance)
+                except Exception as merge_err:
+                    print(f"⚠️ Re-merge after dispose failed: {merge_err}")
+
+            if attempt < max_retries:
+                _time.sleep(delay)
+
+    print(f"❌ Commit failed after {max_retries} attempts: {last_error}")
+    raise last_error
+
+
 def kill_process_tree(pid):
     """
     Kill a process and all its children using psutil
     Works in Docker and without Docker
     """
     print(f"🔍 Attempting to kill process tree for PID: {pid}")
-    
+
     try:
         import psutil
         try:
             parent = psutil.Process(pid)
             children = parent.children(recursive=True)
-            
+
             # Kill children first
             for child in children:
                 try:
@@ -129,7 +211,7 @@ def kill_process_tree(pid):
                     pass
                 except Exception as e:
                     print(f"   ⚠️ Error killing child {child.pid}: {e}")
-            
+
             # Kill parent
             try:
                 parent.kill()
@@ -138,16 +220,16 @@ def kill_process_tree(pid):
                 print(f"⚠️ Process {pid} no longer exists")
             except Exception as e:
                 print(f"⚠️ Error killing parent process: {e}")
-            
+
             return True
-            
+
         except psutil.NoSuchProcess:
             print(f"⚠️ Process {pid} no longer exists")
             return True
         except Exception as e:
             print(f"⚠️ Error killing process tree with psutil: {e}")
             return kill_process_fallback(pid)
-            
+
     except ImportError:
         # Fallback if psutil not installed
         return kill_process_fallback(pid)
@@ -175,7 +257,8 @@ def kill_process_fallback(pid):
     except Exception as e:
         print(f"❌ Error killing process {pid}: {e}")
         return False
-    
+
+
 def register_child_process(job_id, trigger_source, process, history_id=None):
     """
     Register a child process for tracking (used for "All Databases" mode)
@@ -196,13 +279,14 @@ def register_child_process(job_id, trigger_source, process, history_id=None):
         }
     print(f"📝 Registered process for job {key} (PID: {pid}, PGID: {pgid})")
 
+
 def unregister_child_process(job_id, trigger_source, process):
     """
     Unregister a child process
     """
     key = f"{job_id}_{trigger_source}"
     pid = process.pid
-    
+
     with running_child_processes_lock:
         if key in running_child_processes:
             running_child_processes[key] = [
@@ -210,8 +294,9 @@ def unregister_child_process(job_id, trigger_source, process):
             ]
             if not running_child_processes[key]:
                 del running_child_processes[key]
-    
+
     print(f"🧹 Unregistered child process for job {key} (PID: {pid})")
+
 
 def kill_child_processes(job_id, trigger_source):
     """
@@ -219,7 +304,7 @@ def kill_child_processes(job_id, trigger_source):
     """
     key = f"{job_id}_{trigger_source}"
     killed_count = 0
-    
+
     with running_child_processes_lock:
         if key in running_child_processes:
             print(f"   Found {len(running_child_processes[key])} child processes to kill")
@@ -242,14 +327,15 @@ def kill_child_processes(job_id, trigger_source):
                                 pass
                     except Exception as e:
                         print(f"   ⚠️ Error killing child {pid}: {e}")
-            
+
             # Clear the list
             running_child_processes[key] = []
             # Remove the key if empty
             if not running_child_processes[key]:
                 del running_child_processes[key]
-    
+
     return killed_count
+
 
 def register_backup_process(job_id, trigger_source, process, history_id):
     """Register a running backup process for cancellation"""
@@ -259,7 +345,7 @@ def register_backup_process(job_id, trigger_source, process, history_id):
         pgid = os.getpgid(pid)
     except:
         pgid = pid
-    
+
     with running_backup_processes_lock:
         running_backup_processes[key] = {
             'process': process,
@@ -279,149 +365,27 @@ def unregister_backup_process(job_id, trigger_source):
             del running_backup_processes[key]
             print(f"🧹 Unregistered process for job {key}")
 
-# def cancel_backup_job(job_id, trigger_source=None):
-#     """
-#     Cancel a running backup job by killing the actual process
-#     """
-#     from app import app
-    
-#     with app.app_context():
-#         from models import BackupHistory, db
-#         from datetime import datetime
-        
-#         # Build the key
-#         if trigger_source:
-#             key = f"{job_id}_{trigger_source}"
-#         else:
-#             key = str(job_id)
-        
-#         # Find the running history record FIRST
-#         query = BackupHistory.query.filter(
-#             BackupHistory.backup_job_id == job_id,
-#             BackupHistory.status == 'running'
-#         )
-#         if trigger_source:
-#             query = query.filter(BackupHistory.trigger_source == trigger_source)
-        
-#         history = query.order_by(BackupHistory.start_time.desc()).first()
-        
-#         if not history:
-#             print(f"❌ No running history found for job {job_id}")
-#             return False
-        
-#         # Check if there's a running process
-#         process_info = None
-#         with running_backup_processes_lock:
-#             # Try exact match first
-#             if key in running_backup_processes:
-#                 process_info = running_backup_processes[key]
-#             else:
-#                 # Try to find by job_id only (any schedule type)
-#                 for k, v in running_backup_processes.items():
-#                     if k.startswith(f"{job_id}_"):
-#                         process_info = v
-#                         key = k
-#                         break
-        
-#         # Kill the process if found
-#         if process_info and process_info.get('process'):
-#             try:
-#                 process = process_info['process']
-#                 pid = process.pid
-                
-#                 print(f"🛑 Attempting to kill process PID: {pid} for job {key}")
-                
-#                 # Kill the entire process tree
-#                 try:
-#                     import psutil
-#                     parent = psutil.Process(pid)
-#                     children = parent.children(recursive=True)
-                    
-#                     # Kill children first (mysqldump/pg_dump processes)
-#                     for child in children:
-#                         try:
-#                             print(f"   Killing child process PID: {child.pid}")
-#                             child.kill()
-#                         except Exception as e:
-#                             print(f"   ⚠️ Error killing child {child.pid}: {e}")
-                    
-#                     # Kill parent process
-#                     parent.kill()
-#                     print(f"✅ Killed process PID: {pid}")
-                    
-#                 except ImportError:
-#                     # Fallback if psutil not installed
-#                     import signal
-#                     os.killpg(os.getpgid(pid), signal.SIGTERM)
-#                     print(f"✅ Killed process group PID: {pid}")
-                    
-#                 except psutil.NoSuchProcess:
-#                     print(f"⚠️ Process {pid} no longer exists")
-#                 except Exception as e:
-#                     print(f"⚠️ Error killing process tree: {e}")
-                
-#                 # Update the history record to CANCELLED
-#                 history.status = 'cancelled'
-#                 history.is_cancelled = True
-#                 history.cancelled_at = datetime.now()
-#                 history.cancelled_by = 'User'
-#                 history.message = 'Job cancelled by user (process killed)'
-#                 db.session.commit()
-#                 print(f"✅ Job {key} marked as CANCELLED in database")
-                
-#                 # Clean up the process info
-#                 with running_backup_processes_lock:
-#                     if key in running_backup_processes:
-#                         del running_backup_processes[key]
-                
-#                 return True
-                
-#             except Exception as e:
-#                 print(f"❌ Error killing process: {e}")
-#                 # Still mark as cancelled even if process kill fails
-#                 history.status = 'cancelled'
-#                 history.is_cancelled = True
-#                 history.cancelled_at = datetime.now()
-#                 history.cancelled_by = 'User'
-#                 history.message = f'Job cancelled by user (process kill failed: {str(e)})'
-#                 db.session.commit()
-#                 return True
-        
-#         # If no process found, still mark as cancelled
-#         history.status = 'cancelled'
-#         history.is_cancelled = True
-#         history.cancelled_at = datetime.now()
-#         history.cancelled_by = 'User'
-#         history.message = 'Job cancelled by user (no process found)'
-#         db.session.commit()
-#         print(f"✅ Job {key} marked as CANCELLED in database (no process found)")
-        
-#         # Clean up process info if exists
-#         with running_backup_processes_lock:
-#             if key in running_backup_processes:
-#                 del running_backup_processes[key]
-        
-#         return True
+
 def cancel_backup_job(job_id, trigger_source=None):
     """
     Cancel a running backup job by killing the actual process
     """
     from app import app
-    
+
     with app.app_context():
         from models import BackupHistory, db
         from datetime import datetime
-        
+
         # Build the key
         if trigger_source:
             key = f"{job_id}_{trigger_source}"
         else:
             key = str(job_id)
-        
+
         # Set cancellation flag IMMEDIATELY
         cancellation_flags[key] = True
         print(f"🛑 Cancellation flag set for {key}")
-        
+
         # Find the running history record
         query = BackupHistory.query.filter(
             BackupHistory.backup_job_id == job_id,
@@ -429,13 +393,13 @@ def cancel_backup_job(job_id, trigger_source=None):
         )
         if trigger_source:
             query = query.filter(BackupHistory.trigger_source == trigger_source)
-        
+
         history = query.order_by(BackupHistory.start_time.desc()).first()
-        
+
         if not history:
             print(f"❌ No running history found for job {job_id}")
             return True
-        
+
         # KILL ALL CHILD PROCESSES FIRST
         print(f"🛑 Killing ALL child processes for job {key}...")
         child_killed = kill_child_processes(job_id, trigger_source)
@@ -443,16 +407,16 @@ def cancel_backup_job(job_id, trigger_source=None):
             print(f"   ✅ Killed {child_killed} child processes")
         else:
             print(f"   ℹ️ No child processes found")
-        
+
         # Also kill any orphaned mysqldump processes (for All Databases mode)
         os.system("pkill -9 mysqldump 2>/dev/null")
         os.system("pkill -9 pg_dump 2>/dev/null")
-        
+
         # Check if there's a running process
         process_info = None
         pgid = None
         pid = None
-        
+
         with running_backup_processes_lock:
             if key in running_backup_processes:
                 process_info = running_backup_processes[key]
@@ -469,19 +433,19 @@ def cancel_backup_job(job_id, trigger_source=None):
                         key = k
                         print(f"🔍 Found process info for {k}: PID={pid}, PGID={pgid}")
                         break
-        
+
         # Kill the main process if found
         if pid:
             print(f"🛑 Attempting to kill main process PID: {pid}")
-            
+
             # Kill the process tree
             kill_result = kill_process_tree(pid)
-            
+
             if kill_result:
                 print(f"✅ Main process killed successfully")
             else:
                 print(f"⚠️ Main process kill may have failed")
-            
+
             # Clean up the process info
             with running_backup_processes_lock:
                 if key in running_backup_processes:
@@ -489,17 +453,17 @@ def cancel_backup_job(job_id, trigger_source=None):
                     print(f"🧹 Removed process info for {key}")
         else:
             print(f"⚠️ No main process found for job {key}")
-        
+
         # Update the history record to CANCELLED
         history.status = 'cancelled'
         history.is_cancelled = True
         history.cancelled_at = datetime.now()
         history.cancelled_by = 'User'
         history.message = f'Job cancelled by user (killed {child_killed} child processes)'
-        db.session.commit()
-        
+        commit_with_retry(db.session, instance=history, max_retries=3, delay=2)
+
         print(f"✅ Job {key} marked as CANCELLED in database")
-        
+
         # Clear cancellation flag after a delay
         import threading
         def clear_flag():
@@ -507,9 +471,10 @@ def cancel_backup_job(job_id, trigger_source=None):
             time.sleep(5)
             clear_cancellation_flag(job_id, trigger_source)
         threading.Thread(target=clear_flag, daemon=True).start()
-        
+
         return True
-    
+
+
 def cleanup_stuck_jobs(max_hours=48):
     """
     Clean up jobs that have been running for too long.
@@ -517,29 +482,29 @@ def cleanup_stuck_jobs(max_hours=48):
     """
     from app import app
     from datetime import datetime, timedelta
-    
+
     with app.app_context():
         from models import BackupHistory, db
-        
+
         # Use environment variable or default to 48 hours
         timeout_hours = int(os.getenv('JOB_TIMEOUT_HOURS', max_hours))
         timeout = datetime.now() - timedelta(hours=timeout_hours)
-        
+
         print(f"🧹 Running cleanup for jobs older than {timeout_hours} hours")
-        
+
         stuck_jobs = BackupHistory.query.filter(
             BackupHistory.status == 'running',
             BackupHistory.start_time < timeout
         ).all()
-        
+
         if not stuck_jobs:
             print("   No stuck jobs found")
             return
-        
+
         for job in stuck_jobs:
             duration = (datetime.now() - job.start_time).total_seconds() / 3600
             print(f"🔄 Cleaning up stuck job: {job.id} (running for {duration:.1f} hours, started at {job.start_time})")
-            
+
             # Kill the process if still running
             key = f"{job.backup_job_id}_{job.trigger_source}"
             with running_backup_processes_lock:
@@ -554,12 +519,13 @@ def cleanup_stuck_jobs(max_hours=48):
                     del running_backup_processes[key]
                 else:
                     print(f"   ⚠️ No process found for job {key}")
-            
+
             job.status = 'failed'
             job.end_time = datetime.now()
             job.message = f"Job timed out after {timeout_hours} hours. Started at {job.start_time}"
-            db.session.commit()
+            commit_with_retry(db.session, instance=job, max_retries=3, delay=2)
             print(f"   ✅ Updated job {job.id} status to 'failed'")
+
 
 def is_job_cancelled(job_id, trigger_source):
     """
@@ -578,6 +544,7 @@ def clear_cancellation_flag(job_id, trigger_source):
         del cancellation_flags[key]
         print(f"🧹 Cleared cancellation flag for {key}")
 
+
 def init_scheduler(app):
     global scheduler, scheduler_lock_file
     timezone = app.config.get('APP_TIMEZONE', 'Asia/Dhaka')
@@ -586,7 +553,7 @@ def init_scheduler(app):
     if scheduler and scheduler.running:
         print("✅ Scheduler is already running")
         return scheduler
-    
+
     # Create a lock file to prevent multiple instances
     try:
         scheduler_lock_file = open(SCHEDULER_LOCK_PATH, 'w')
@@ -598,21 +565,21 @@ def init_scheduler(app):
     except Exception as e:
         print(f"❌ Error creating scheduler lock: {e}")
         return None
-    
+
     try:
         # Configure job stores and executors
         jobstores = {
             'default': MemoryJobStore()
         }
         executors = {
-            'default': ThreadPoolExecutor(5)
+            'default': ThreadPoolExecutor(20)
         }
         job_defaults = {
             'coalesce': True,  # Combine multiple pending executions
             'max_instances': 1,  # Only one instance of a job can run at a time
             'misfire_grace_time': 300  # 5 minutes grace period
         }
-        
+
         # Initialize scheduler
         scheduler = APScheduler(BackgroundScheduler(
             jobstores=jobstores,
@@ -620,25 +587,26 @@ def init_scheduler(app):
             job_defaults=job_defaults,
             timezone='Asia/Dhaka'
         ))
-        
+
         scheduler.init_app(app)
-        
+
         # Register shutdown handler
         atexit.register(shutdown_scheduler)
-        
+
         # Start scheduler
         if not scheduler.running:
             scheduler.start()
             print("✅ Scheduler started successfully")
-        
+
         return scheduler
-        
+
     except Exception as e:
         print(f"❌ Error initializing scheduler: {e}")
         import traceback
         traceback.print_exc()
         shutdown_scheduler()
         return None
+
 
 def shutdown_scheduler():
     global scheduler, scheduler_lock_file
@@ -651,7 +619,7 @@ def shutdown_scheduler():
                 print("ℹ️  Scheduler was not running, no need to shut down")
         except Exception as e:
             print(f"⚠️ Error shutting down scheduler: {e}")
-    
+
     if scheduler_lock_file:
         try:
             # Only try to unlock if the file is still open
@@ -665,15 +633,16 @@ def shutdown_scheduler():
             # It's okay if the file is already closed or doesn't exist
             pass
 
+
 def schedule_backup_job(scheduler_obj, job):
     """Schedule a backup job with proper configuration"""
     if not scheduler_obj:
         print("❌ Scheduler not available for scheduling job")
         return
-    
+
     # Remove existing job if it exists
     unschedule_backup_job(scheduler_obj, job.id)
-    
+
     schedule_config = normalize_schedule_config(
         job.schedule_config,
         job.schedule_type,
@@ -685,7 +654,7 @@ def schedule_backup_job(scheduler_obj, job):
     if not schedule_entries:
         print(f"❌ No enabled schedules found for job: {job.name}")
         return
-    
+
     try:
         for entry in schedule_entries:
             cron_parts = entry["cron_expression"].split()
@@ -724,11 +693,12 @@ def schedule_backup_job(scheduler_obj, job):
         print(f"   📅 Schedules: {[entry['summary'] for entry in schedule_entries]}")
         print(f"   🗃️  Databases: {json.loads(job.databases)}")
         print(f"   ⏰ Next runs: {get_next_run_time(scheduler_obj, job.id)}")
-        
+
     except Exception as e:
         print(f"❌ Error scheduling job {job.name}: {e}")
         import traceback
         traceback.print_exc()
+
 
 def get_next_run_time(scheduler_obj, job_id):
     """Get the next run time for a job"""
@@ -739,13 +709,13 @@ def get_next_run_time(scheduler_obj, job_id):
                 if hasattr(scheduled_job, 'next_run_time') and scheduled_job.next_run_time:
                     schedule_type = scheduled_job.id.replace(f'backup_job_{job_id}_', '')
                     next_time = scheduled_job.next_run_time
-                    
+
                     # Convert to local timezone if needed
                     if next_time.tzinfo is None:
                         import pytz
                         local_tz = pytz.timezone('Asia/Dhaka')
                         next_time = local_tz.localize(next_time)
-                    
+
                     next_runs.append(
                         f"{schedule_type.capitalize()}: "
                         f"{next_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
@@ -755,11 +725,12 @@ def get_next_run_time(scheduler_obj, job_id):
     except Exception as e:
         return f"Error: {str(e)}"
 
+
 def unschedule_backup_job(scheduler_obj, job_id):
     """Remove a backup job from the scheduler"""
     if not scheduler_obj:
         return
-        
+
     try:
         for scheduled_job in scheduler_obj.get_jobs():
             if scheduled_job.id.startswith(f'backup_job_{job_id}_'):
@@ -769,8 +740,10 @@ def unschedule_backup_job(scheduler_obj, job_id):
         # Job might not exist, which is fine
         pass
 
+
 def get_schedule_job_id(job_id, schedule_type):
     return f'backup_job_{job_id}_{schedule_type}'
+
 
 def enqueue_immediate_backup_job(scheduler_obj, job_id):
     if scheduler_obj and scheduler_obj.running:
@@ -786,6 +759,7 @@ def enqueue_immediate_backup_job(scheduler_obj, job_id):
 
     threading.Thread(target=run_backup_job, args=(job_id, 'manual'), daemon=True).start()
     return True
+
 
 def determine_run_targets(job, trigger_source):
     schedule_config = normalize_schedule_config(
@@ -805,7 +779,7 @@ def determine_run_targets(job, trigger_source):
         import pytz
         local_tz = pytz.timezone('Asia/Dhaka')
         current_time = datetime.now(local_tz)
-        
+
         matched_types = [
             schedule_type
             for schedule_type in enabled_schedule_types
@@ -817,40 +791,48 @@ def determine_run_targets(job, trigger_source):
 
     return enabled_schedule_types or ['manual']
 
+
 def run_backup_job(job_id, trigger_source='manual'):
     """
-    Run backup job with cancellation support and timeout checking
+    Run backup job with cancellation support and timeout checking.
+
+    IMPORTANT: The DB connection is released before the long-running backup
+    starts (via db.session.remove()) and re-acquired afterwards. The backup
+    scripts (mysql_backup / postgres_backup) receive IDs, not ORM objects,
+    and re-fetch what they need on their own short-lived session. This
+    prevents the "MySQL server has gone away" error that occurs when a
+    session is held idle for many hours while mysqldump / pg_dump runs.
     """
     key = f"{job_id}_{trigger_source}"
-    
+
     print(f"🔹 Starting backup job ID: {job_id} (trigger: {trigger_source})")
-    
+
     # Clear any previous cancellation flag
     if key in cancellation_flags:
         del cancellation_flags[key]
-    
+
     # Create a lock file for this specific job
     lock_file = f"/tmp/backup_job_{job_id}.lock"
     lock_fd = None
-    
+
     try:
         # Try to acquire lock
         lock_fd = os.open(lock_file, os.O_CREAT | os.O_WRONLY)
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        
+
     except IOError:
         print(f"⏸️ Job {job_id} is already running, skipping...")
         return
     except Exception as e:
         print(f"❌ Error acquiring lock for job {job_id}: {e}")
         return
-    
+
     try:
         from app import app
-        
+
         with app.app_context():
             from models import BackupJob, DatabaseServer, StorageLocation, BackupHistory, db
-            
+
             # Check if cancelled before starting
             if is_job_cancelled(job_id, trigger_source):
                 print(f"🛑 Job {job_id} ({trigger_source}) was cancelled before starting")
@@ -859,29 +841,29 @@ def run_backup_job(job_id, trigger_source='manual'):
                     BackupHistory.backup_job_id == job_id,
                     BackupHistory.status == 'running'
                 ).order_by(BackupHistory.start_time.desc()).first()
-                
+
                 if history:
                     history.status = 'cancelled'
                     history.is_cancelled = True
                     history.cancelled_at = datetime.now()
                     history.message = 'Job cancelled by user before execution'
-                    db.session.commit()
-                
+                    commit_with_retry(db.session, instance=history, max_retries=3, delay=2)
+
                 clear_cancellation_flag(job_id, trigger_source)
                 return
-            
+
             job = BackupJob.query.get(job_id)
             if not job or not job.is_active:
                 print(f"❌ Job {job_id} not found or inactive")
                 return
-            
+
             # Check if there's already a running instance of this job in the database
             running_job = BackupHistory.query.filter(
                 BackupHistory.backup_job_id == job.id,
                 BackupHistory.status == 'running',
                 BackupHistory.start_time > datetime.now() - timedelta(hours=1)
             ).first()
-            
+
             if running_job:
                 print(f"⏸️ Job {job.name} is already running (started at {running_job.start_time}), skipping...")
                 return
@@ -891,7 +873,7 @@ def run_backup_job(job_id, trigger_source='manual'):
             print(f"🚀 Starting backup: {job.name}")
             print(f"   - Trigger source: {trigger_source}")
             print(f"   - Target schedules: {schedule_targets}")
-            
+
             # Create backup history record
             history = BackupHistory(
                 backup_job_id=job.id,
@@ -903,34 +885,48 @@ def run_backup_job(job_id, trigger_source='manual'):
             db.session.add(history)
             db.session.commit()
 
+            # Capture the ID so we can re-fetch after releasing the session
+            history_id = history.id
+
             success = False
             message = "Backup did not start."
             file_path = None
             file_size = 0
             database_results = []
-            
+
             # Setup log directory and file with schedule type
             logs_dir = os.path.join(app.root_path, BACKUP_LOG_DIR)
             os.makedirs(logs_dir, exist_ok=True)
-            
+
             # Use schedule-specific log file
             log_filename = f"backup_job_{job.id}_{trigger_source}.log"
             log_path = os.path.join(logs_dir, log_filename)
             history.log_path = log_path
             db.session.commit()
-            
+
             # Rotate log if needed
             rotate_log(log_path)
             cleanup_old_rotated_logs(logs_dir)
-            
+
             run_id = f"{history.id}_{int(datetime.now().timestamp())}"
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
+
             try:
-                server = job.database_server
-                location = job.storage_location
+                # ─────────────────────────────────────────────────────────
+                # Extract everything we need BEFORE releasing the session.
+                # These are plain Python values/IDs that survive detach.
+                # ─────────────────────────────────────────────────────────
+                server_id = job.database_server.id
+                location_id = job.storage_location.id
+                server_type_value = job.database_server.type.value
+                server_name = job.database_server.name
+                location_type_value = job.storage_location.type.value
+                location_name = job.storage_location.name
                 databases = json.loads(job.databases)
-                
+                folder_path = job.folder_path
+                job_name = job.name
+                notification_email = job.notification_email
+
                 # Check if cancelled
                 if is_job_cancelled(job_id, trigger_source):
                     print(f"🛑 Job {job_id} ({trigger_source}) cancelled during initialization")
@@ -938,70 +934,105 @@ def run_backup_job(job_id, trigger_source='manual'):
                     history.is_cancelled = True
                     history.cancelled_at = datetime.now()
                     history.message = 'Job cancelled by user'
-                    db.session.commit()
+                    commit_with_retry(db.session, instance=history, max_retries=3, delay=2)
                     return
-                
+
                 log_file = None
                 try:
                     log_file = open(log_path, 'a', encoding='utf-8')
                 except Exception as e:
                     print(f"⚠️ Error opening log file: {e}")
-                
+
                 if log_file:
                     tee_stdout = SafeTeeStream(sys.stdout, log_file)
                     tee_stderr = SafeTeeStream(sys.stderr, log_file)
                 else:
                     tee_stdout = SafeTeeStream(sys.stdout)
                     tee_stderr = SafeTeeStream(sys.stderr)
-                
+
                 with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
                     print(f"\n{'='*80}")
                     print(f"🔹 BACKUP RUN STARTED: {timestamp}")
                     print(f"   Run ID: {run_id}")
-                    print(f"   Job: {job.name} (ID: {job.id})")
+                    print(f"   Job: {job_name} (ID: {job_id})")
                     print(f"   Schedule Type: {trigger_source}")
                     print(f"   Log file: {log_path}")
                     print(f"   Timeout: {os.getenv('JOB_TIMEOUT_HOURS', 48)} hours")
                     print(f"{'='*80}\n")
-                    
+
                     print(f"📊 Backup details:")
-                    print(f"   - Server: {server.name} ({server.type.value})")
-                    print(f"   - Storage: {location.name} ({location.type.value})")
+                    print(f"   - Server: {server_name} ({server_type_value})")
+                    print(f"   - Storage: {location_name} ({location_type_value})")
                     print(f"   - Databases: {databases}")
                     print(f"   - Schedule config: {schedule_targets}")
-                    print(f"   - Folder: {job.folder_path}")
-                    
+                    print(f"   - Folder: {folder_path}")
+
                     # Check if cancelled before backup
                     if is_job_cancelled(job_id, trigger_source):
                         print(f"🛑 Job {job_id} ({trigger_source}) cancelled before backup execution")
                         success = False
                         message = "Job cancelled by user"
                     else:
+                        # ─────────────────────────────────────────────────────
+                        # CRITICAL: Release the DB connection before the long
+                        # backup starts, otherwise MySQL will kill the idle
+                        # connection after its wait_timeout and we'll get
+                        # "MySQL server has gone away" on the final commit.
+                        #
+                        # We pass IDs (not ORM objects) to the backup scripts,
+                        # which re-fetch what they need on their own short-lived
+                        # session. This avoids DetachedInstanceError entirely.
+                        # ─────────────────────────────────────────────────────
+                        try:
+                            db.session.commit()
+                        except Exception as pre_commit_err:
+                            print(f"⚠️ Pre-backup commit failed: {pre_commit_err}")
+                        db.session.remove()
+                        db.engine.dispose()
+                        print("🔌 Released DB connection before long-running backup")
+
                         # Run backup based on database type
-                        if server.type.value == 'mysql':
+                        if server_type_value == 'mysql':
                             success, message, file_path, file_size, database_results = mysql_backup(
-                                server, databases, location, job.folder_path, schedule_targets, job.id, trigger_source
+                                server_id, databases, location_id, folder_path,
+                                schedule_targets, job_id, trigger_source
                             )
-                        elif server.type.value == 'postgres':
+                        elif server_type_value == 'postgres':
                             success, message, file_path, file_size, database_results = postgres_backup(
-                                server, databases, location, job.folder_path, schedule_targets, job.id, trigger_source
+                                server_id, databases, location_id, folder_path,
+                                schedule_targets, job_id, trigger_source
                             )
                         else:
                             success, message, file_path, file_size, database_results = False, "Unsupported database type", None, 0, []
-                    
+
+                        # ─────────────────────────────────────────────────────
+                        # Re-attach the history row on a fresh DB connection
+                        # so we can safely update it below.
+                        # ─────────────────────────────────────────────────────
+                        try:
+                            history = db.session.get(BackupHistory, history_id)
+                        except Exception:
+                            history = None
+                        if history is None:
+                            # Fallback for older SQLAlchemy versions
+                            history = BackupHistory.query.get(history_id)
+                        if history is None:
+                            print(f"❌ Could not re-fetch history row {history_id}; aborting status update")
+                            raise RuntimeError(f"History row {history_id} disappeared after backup")
+
                     print(f"\n{'='*80}")
                     print(f"🏁 BACKUP RUN COMPLETED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                     print(f"   Status: {'SUCCESS' if success else 'FAILED' if not is_job_cancelled(job_id, trigger_source) else 'CANCELLED'}")
                     print(f"   Message: {message}")
                     print(f"   Duration: {(datetime.now() - history.start_time).total_seconds():.2f} seconds")
                     print(f"{'='*80}\n")
-                
+
                 if log_file and not log_file.closed:
                     log_file.close()
-                
+
                 # Update history record
                 history.end_time = datetime.now()
-                
+
                 # Check if cancelled during execution
                 if is_job_cancelled(job_id, trigger_source):
                     history.status = 'cancelled'
@@ -1012,81 +1043,90 @@ def run_backup_job(job_id, trigger_source='manual'):
                 else:
                     history.status = 'success' if success else 'failed'
                     history.message = message
-                
+
                 history.file_path = file_path
                 history.file_size = file_size
                 history.trigger_source = trigger_source
-                
+
                 duration = (history.end_time - history.start_time).total_seconds()
-                
+
                 if history.status == 'cancelled':
-                    print(f"🛑 Backup cancelled: {job.name} ({trigger_source})")
+                    print(f"🛑 Backup cancelled: {job_name} ({trigger_source})")
                 elif success:
-                    print(f"✅ Backup completed successfully: {job.name} ({trigger_source})")
+                    print(f"✅ Backup completed successfully: {job_name} ({trigger_source})")
                     print(f"   - Duration: {duration:.2f} seconds")
                     print(f"   - File size: {file_size} bytes")
                 else:
-                    print(f"❌ Backup failed: {job.name} ({trigger_source})")
+                    print(f"❌ Backup failed: {job_name} ({trigger_source})")
                     print(f"   - Error: {message}")
                     print(f"   - Duration: {duration:.2f} seconds")
-                    
-            except Exception as e:
-                history.end_time = datetime.now()
-                history.status = 'failed'
-                message = f"Unexpected error: {str(e)}"
-                history.message = message
-                history.trigger_source = trigger_source
-                
-                # Check if it was cancelled
-                if is_job_cancelled(job_id, trigger_source):
-                    history.status = 'cancelled'
-                    history.is_cancelled = True
-                    history.cancelled_at = datetime.now()
-                    history.message = 'Job cancelled by user'
-                    print(f"🛑 Backup cancelled: {job.name} ({trigger_source})")
-                else:
-                    history.status = 'failed'
-                    message = f"Unexpected error: {str(e)}"
-                    history.message = message
-                    print(f"❌ Backup failed: {job.name} ({trigger_source})")
 
-                
+            except Exception as e:
+                # Re-fetch the history row on a fresh session in case the
+                # exception happened before we re-attached it.
+                try:
+                    history = db.session.get(BackupHistory, history_id)
+                except Exception:
+                    try:
+                        history = BackupHistory.query.get(history_id)
+                    except Exception:
+                        history = None
+
+                if history is not None:
+                    history.end_time = datetime.now()
+
+                    if is_job_cancelled(job_id, trigger_source):
+                        history.status = 'cancelled'
+                        history.is_cancelled = True
+                        history.cancelled_at = datetime.now()
+                        history.message = 'Job cancelled by user'
+                        print(f"🛑 Backup cancelled: job {job_id} ({trigger_source})")
+                    else:
+                        history.status = 'failed'
+                        message = f"Unexpected error: {str(e)}"
+                        history.message = message
+                        print(f"❌ Backup failed: job {job_id} ({trigger_source})")
+
+                    history.trigger_source = trigger_source
+
                 try:
                     with open(log_path, 'a', encoding='utf-8') as log_file:
-                        print(f"💥 Unexpected error in backup job {job.name}: {e}", file=log_file)
+                        print(f"💥 Unexpected error in backup job {job_id}: {e}", file=log_file)
                         import traceback
                         traceback.print_exc(file=log_file)
                 except:
                     pass
-                
-                print(f"💥 Unexpected error in backup job {job.name} ({trigger_source}): {e}")
+
+                print(f"💥 Unexpected error in backup job {job_id} ({trigger_source}): {e}")
                 import traceback
                 traceback.print_exc()
-            
-            db.session.commit()
+
+            # ─────────────────────────────────────────────────────────────
+            # Final commit — retried with a fresh connection if necessary.
+            # The history instance is passed so it survives session resets.
+            # ─────────────────────────────────────────────────────────────
+            if history is not None:
+                commit_with_retry(db.session, instance=history, max_retries=3, delay=5)
 
             # Clear cancellation flag
             clear_cancellation_flag(job_id, trigger_source)
 
-            # # Send notification only if not cancelled
-            # if history.status != 'cancelled':
-            #     if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
-            #         send_notification_email(job, history, schedule_targets, success, message, database_results)
             # Send notification based on status
-            if job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL'):
+            if history is not None and (notification_email or os.getenv('SMTP_RECEIVER_EMAIL')):
                 if history.status == 'cancelled':
                     # Send cancellation notification
-                    send_cancellation_email(job, history, schedule_targets, database_results, success)
+                    send_cancellation_email(job_id, history_id, schedule_targets, database_results, success)
                 else:
                     # Send normal success/failure notification
-                    send_notification_email(job, history, schedule_targets, success, message, database_results)        
+                    send_notification_email(job_id, history_id, schedule_targets, success, message, database_results)
+
     except Exception as e:
         print(f"💥 Critical error in run_backup_job for job {job_id} ({trigger_source}): {e}")
         import traceback
         traceback.print_exc()
         # Clear cancellation flag on error too
         clear_cancellation_flag(job_id, trigger_source)
-        
+
     finally:
         # Release lock
         try:
@@ -1101,12 +1141,14 @@ def run_backup_job(job_id, trigger_source='manual'):
         except Exception as e:
             print(f"⚠️ Error releasing lock for job {job_id} ({trigger_source}): {e}")
 
+
 def build_history_message(message, database_results):
     if not database_results:
         return message
 
     summary = summarize_database_results(database_results)
     return f"{message}\n{summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases."
+
 
 def summarize_database_results(database_results):
     success_count = len([item for item in database_results if item.get('status') == 'success'])
@@ -1118,427 +1160,6 @@ def summarize_database_results(database_results):
         'total_count': total_count,
     }
 
-def send_notification_email(job, history, schedule_targets, success, message, database_results):
-    """Send an HTML backup report email via SMTP using environment variables."""
-    try:
-        smtp_config = get_smtp_config(job)
-        if not smtp_config['host'] or not smtp_config['receiver_email'] or not smtp_config['from_email']:
-            print("⚠️ SMTP configuration is incomplete. Skipping notification email.")
-            return
-
-        schedule_label = get_email_schedule_label(schedule_targets)
-        subject = f"{schedule_label} backup report - {job.name} - {'Success' if success else 'Failed'}"
-        previous_backup = get_previous_successful_backup(job.id, history.id)
-        html_body = build_backup_report_html(job, history, schedule_label, database_results, previous_backup)
-        text_body = build_backup_report_text(job, history, schedule_label, database_results, previous_backup, message)
-
-        email_message = MIMEMultipart('alternative')
-        email_message['Subject'] = subject
-        email_message['From'] = formataddr((smtp_config['from_name'], smtp_config['from_email']))
-        email_message['To'] = smtp_config['receiver_email']
-
-        email_message.attach(MIMEText(text_body, 'plain'))
-        email_message.attach(MIMEText(html_body, 'html'))
-
-        if smtp_config['use_ssl']:
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(smtp_config['host'], smtp_config['port'], context=context) as server:
-                login_and_send(server, smtp_config, email_message)
-        else:
-            with smtplib.SMTP(smtp_config['host'], smtp_config['port']) as server:
-                server.ehlo()
-                if smtp_config['use_tls']:
-                    context = ssl.create_default_context()
-                    server.starttls(context=context)
-                    server.ehlo()
-                login_and_send(server, smtp_config, email_message)
-
-        print(f"📧 Notification email sent to: {smtp_config['receiver_email']}")
-    except Exception as e:
-        print(f"⚠️ Error sending notification email: {e}")
-
-def send_test_email(recipient_email):
-    """Send a simple SMTP test email to verify configuration."""
-    test_job = type('EmailTestJob', (), {'notification_email': recipient_email})()
-    smtp_config = get_smtp_config(test_job)
-
-    if not smtp_config['host'] or not smtp_config['receiver_email'] or not smtp_config['from_email']:
-        raise ValueError("SMTP configuration is incomplete. Check SMTP_HOST, SMTP_FROM_EMAIL, and recipient email.")
-
-    sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    subject = "SMTP Test Email - dbDock"
-    html_body = f"""
-    <html>
-      <body style="font-family: Arial, sans-serif; background:#ffffff; color:#222; padding:20px;">
-        <div style="max-width:720px; margin:0 auto;">
-          <h2 style="text-align:center; margin-bottom:24px;">SMTP Test Email</h2>
-          <table style="width:100%; border-collapse:collapse;">
-            <tr>
-              <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Status</strong></td>
-              <td style="padding:10px; border:1px solid #d9d9d9; color:#0a8f08; font-weight:700;">Success</td>
-            </tr>
-            <tr>
-              <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Sent At</strong></td>
-              <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(sent_at)}</td>
-            </tr>
-            <tr>
-              <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Recipient</strong></td>
-              <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(recipient_email)}</td>
-            </tr>
-          </table>
-          <p style="text-align:center; margin-top:20px;">If you received this email, your SMTP setup is working.</p>
-        </div>
-      </body>
-    </html>
-    """
-    text_body = (
-        "SMTP Test Email\n\n"
-        "Status: Success\n"
-        f"Sent At: {sent_at}\n"
-        f"Recipient: {recipient_email}\n\n"
-        "If you received this email, your SMTP setup is working."
-    )
-
-    email_message = MIMEMultipart('alternative')
-    email_message['Subject'] = subject
-    email_message['From'] = formataddr((smtp_config['from_name'], smtp_config['from_email']))
-    email_message['To'] = smtp_config['receiver_email']
-    email_message.attach(MIMEText(text_body, 'plain'))
-    email_message.attach(MIMEText(html_body, 'html'))
-
-    if smtp_config['use_ssl']:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(smtp_config['host'], smtp_config['port'], context=context) as server:
-            login_and_send(server, smtp_config, email_message)
-    else:
-        with smtplib.SMTP(smtp_config['host'], smtp_config['port']) as server:
-            server.ehlo()
-            if smtp_config['use_tls']:
-                context = ssl.create_default_context()
-                server.starttls(context=context)
-                server.ehlo()
-            login_and_send(server, smtp_config, email_message)
-
-def login_and_send(server, smtp_config, email_message):
-    if smtp_config['username']:
-        server.login(smtp_config['username'], smtp_config['password'])
-    server.sendmail(
-        smtp_config['from_email'],
-        [smtp_config['receiver_email']],
-        email_message.as_string(),
-    )
-
-def get_smtp_config(job):
-    return {
-        'host': os.getenv('SMTP_HOST', '').strip(),
-        'port': int(os.getenv('SMTP_PORT', '587')),
-        'username': os.getenv('SMTP_USER', '').strip(),
-        'password': os.getenv('SMTP_PASS', ''),
-        'from_name': os.getenv('SMTP_FROM_NAME', 'Infra Notification').strip(),
-        'from_email': os.getenv('SMTP_FROM_EMAIL', os.getenv('SMTP_USER', '')).strip(),
-        'receiver_email': (job.notification_email or os.getenv('SMTP_RECEIVER_EMAIL', '')).strip(),
-        'use_tls': os.getenv('SMTP_USE_TLS', 'true').lower() == 'true',
-        'use_ssl': os.getenv('SMTP_USE_SSL', 'false').lower() == 'true',
-    }
-
-def get_email_schedule_label(schedule_targets):
-    if not schedule_targets:
-        return "Backup"
-    if len(schedule_targets) == 1:
-        return schedule_targets[0].capitalize()
-    return "Combined"
-
-def get_previous_successful_backup(job_id, current_history_id):
-    return (
-        BackupHistory.query.filter(
-            BackupHistory.backup_job_id == job_id,
-            BackupHistory.status == 'success',
-            BackupHistory.id != current_history_id,
-        )
-        .order_by(BackupHistory.start_time.desc())
-        .first()
-    )
-
-def build_backup_report_html(job, history, schedule_label, database_results, previous_backup):
-    summary = summarize_database_results(database_results)
-    status_rows = ''.join(
-        [
-            (
-                "<tr>"
-                f"<td style=\"padding:10px;border:1px solid #d9d9d9;\">{html.escape(item.get('database', 'Unknown'))}</td>"
-                f"<td style=\"padding:10px;border:1px solid #d9d9d9;color:{'#0a8f08' if item.get('status') == 'success' else '#c62828'};font-weight:700;\">"
-                f"{html.escape(item.get('status', 'unknown').capitalize())}</td>"
-                "</tr>"
-            )
-            for item in database_results
-        ]
-    )
-
-    if not status_rows:
-        status_rows = (
-            "<tr><td style=\"padding:10px;border:1px solid #d9d9d9;\">No database rows available</td>"
-            "<td style=\"padding:10px;border:1px solid #d9d9d9;\">N/A</td></tr>"
-        )
-
-    current_size = format_bytes(history.file_size or 0)
-    previous_size = format_bytes(previous_backup.file_size) if previous_backup and previous_backup.file_size else "N/A"
-    previous_date = previous_backup.start_time.strftime('%Y-%m-%d') if previous_backup and previous_backup.start_time else "N/A"
-    detailed_path = html.escape(history.log_path or "No log file available")
-
-    return f"""
-    <html>
-      <body style="font-family: Arial, sans-serif; background:#ffffff; color:#222; padding:20px;">
-        <div style="max-width:760px; margin:0 auto;">
-          <h2 style="text-align:center; margin-bottom:24px;">{html.escape(schedule_label)} Backup Report</h2>
-
-          <table style="width:100%; border-collapse:collapse; margin-bottom:24px;">
-            <thead>
-              <tr style="background:#f2f2f2;">
-                <th style="padding:10px; border:1px solid #d9d9d9; text-align:left;">Database Name</th>
-                <th style="padding:10px; border:1px solid #d9d9d9; text-align:center;">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status_rows}
-              <tr>
-                <td colspan="2" style="padding:10px; border:1px solid #d9d9d9; text-align:center;">
-                  <strong>Backup Summary:</strong> {summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h3 style="text-align:center; margin-bottom:16px;">Backup Size</h3>
-          <table style="width:100%; border-collapse:collapse; margin-bottom:16px;">
-            <thead>
-              <tr style="background:#f2f2f2;">
-                <th style="padding:10px; border:1px solid #d9d9d9;">Backup Type</th>
-                <th style="padding:10px; border:1px solid #d9d9d9;">Size</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Database Backup Size of Date: {history.start_time.strftime('%Y-%m-%d')}</strong></td>
-                <td style="padding:10px; border:1px solid #d9d9d9; color:#0a8f08; font-weight:700; text-align:right;">{current_size}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Database Backup Size of Date: {previous_date}</strong></td>
-                <td style="padding:10px; border:1px solid #d9d9d9; color:#0a8f08; font-weight:700; text-align:right;">{previous_size}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <p style="text-align:center; margin-top:20px;">Detailed log available at: {detailed_path}</p>
-        </div>
-      </body>
-    </html>
-    """
-
-def build_backup_report_text(job, history, schedule_label, database_results, previous_backup, message):
-    summary = summarize_database_results(database_results)
-    lines = [
-        f"{schedule_label} backup report",
-        "",
-        f"Job: {job.name}",
-        f"Status: {'Success' if history.status == 'success' else 'Failed'}",
-        f"Summary: {summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases",
-        "",
-        "Database Status:",
-    ]
-
-    for item in database_results:
-        lines.append(f"- {item.get('database', 'Unknown')}: {item.get('status', 'unknown').capitalize()}")
-
-    lines.extend(
-        [
-            "",
-            f"Current backup size ({history.start_time.strftime('%Y-%m-%d')}): {format_bytes(history.file_size or 0)}",
-            (
-                f"Previous backup size ({previous_backup.start_time.strftime('%Y-%m-%d')}): {format_bytes(previous_backup.file_size or 0)}"
-                if previous_backup
-                else "Previous backup size: N/A"
-            ),
-            f"Message: {message}",
-            f"Detailed log available at: {history.log_path or 'No log file available'}",
-        ]
-    )
-
-    return "\n".join(lines)
-
-def send_cancellation_email(job, history, schedule_targets, database_results, success):
-    """Send a cancellation email notification."""
-    try:
-        smtp_config = get_smtp_config(job)
-        if not smtp_config['host'] or not smtp_config['receiver_email'] or not smtp_config['from_email']:
-            print("⚠️ SMTP configuration is incomplete. Skipping cancellation email.")
-            return
-
-        schedule_label = get_email_schedule_label(schedule_targets)
-        subject = f"{schedule_label} backup CANCELLED - {job.name}"
-        
-        # Build HTML body for cancellation
-        html_body = build_cancellation_email_html(job, history, schedule_label, database_results)
-        text_body = build_cancellation_email_text(job, history, schedule_label, database_results)
-
-        email_message = MIMEMultipart('alternative')
-        email_message['Subject'] = subject
-        email_message['From'] = formataddr((smtp_config['from_name'], smtp_config['from_email']))
-        email_message['To'] = smtp_config['receiver_email']
-
-        email_message.attach(MIMEText(text_body, 'plain'))
-        email_message.attach(MIMEText(html_body, 'html'))
-
-        if smtp_config['use_ssl']:
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(smtp_config['host'], smtp_config['port'], context=context) as server:
-                login_and_send(server, smtp_config, email_message)
-        else:
-            with smtplib.SMTP(smtp_config['host'], smtp_config['port']) as server:
-                server.ehlo()
-                if smtp_config['use_tls']:
-                    context = ssl.create_default_context()
-                    server.starttls(context=context)
-                    server.ehlo()
-                login_and_send(server, smtp_config, email_message)
-
-        print(f"📧 Cancellation email sent to: {smtp_config['receiver_email']}")
-    except Exception as e:
-        print(f"⚠️ Error sending cancellation email: {e}")
-        
-def build_cancellation_email_html(job, history, schedule_label, database_results):
-    """Build HTML body for cancellation email."""
-    summary = summarize_database_results(database_results)
-    status_rows = ''.join(
-        [
-            (
-                "<tr>"
-                f"<td style=\"padding:10px;border:1px solid #d9d9d9;\">{html.escape(item.get('database', 'Unknown'))}</td>"
-                f"<td style=\"padding:10px;border:1px solid #d9d9d9;color:{'#0a8f08' if item.get('status') == 'success' else '#c62828' if item.get('status') == 'failed' else '#856404'};font-weight:700;\">"
-                f"{html.escape(item.get('status', 'unknown').capitalize())}</td>"
-                "</tr>"
-            )
-            for item in database_results
-        ]
-    )
-
-    if not status_rows:
-        status_rows = (
-            "<tr><td style=\"padding:10px;border:1px solid #d9d9d9;\">No database rows available</td>"
-            "<td style=\"padding:10px;border:1px solid #d9d9d9;\">N/A</td></tr>"
-        )
-
-    return f"""
-    <html>
-      <body style="font-family: Arial, sans-serif; background:#ffffff; color:#222; padding:20px;">
-        <div style="max-width:760px; margin:0 auto;">
-          <h2 style="text-align:center; margin-bottom:24px; color:#856404;">⛔ {html.escape(schedule_label)} Backup CANCELLED</h2>
-          
-          <div style="background:#fff3cd; border:1px solid #ffc107; border-radius:8px; padding:15px; margin-bottom:20px;">
-            <p style="margin:0; font-weight:700; color:#856404;">
-              ⚠️ The backup was cancelled by the user at {history.cancelled_at.strftime('%Y-%m-%d %H:%M:%S') if history.cancelled_at else 'Unknown time'}.
-            </p>
-          </div>
-
-          <table style="width:100%; border-collapse:collapse; margin-bottom:24px;">
-            <thead>
-              <tr style="background:#f2f2f2;">
-                <th style="padding:10px; border:1px solid #d9d9d9; text-align:left;">Database Name</th>
-                <th style="padding:10px; border:1px solid #d9d9d9; text-align:center;">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status_rows}
-              <tr>
-                <td colspan="2" style="padding:10px; border:1px solid #d9d9d9; text-align:center;">
-                  <strong>Summary:</strong> {summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <table style="width:100%; border-collapse:collapse; margin-bottom:16px;">
-            <thead>
-              <tr style="background:#f2f2f2;">
-                <th style="padding:10px; border:1px solid #d9d9d9;">Job Details</th>
-                <th style="padding:10px; border:1px solid #d9d9d9;">Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Job Name</strong></td>
-                <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(job.name)}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Started At</strong></td>
-                <td style="padding:10px; border:1px solid #d9d9d9;">{history.start_time.strftime('%Y-%m-%d %H:%M:%S')}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Schedule Type</strong></td>
-                <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(schedule_label)}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px; border:1px solid #d9d9d9;"><strong>Storage Location</strong></td>
-                <td style="padding:10px; border:1px solid #d9d9d9;">{html.escape(job.storage_location.name)}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <p style="text-align:center; margin-top:20px; color:#856404;">
-            <strong>⚠️ Backup was cancelled. No further action was taken.</strong>
-          </p>
-          <p style="text-align:center; margin-top:10px; font-size:12px; color:#6c757d;">
-            Log file available at: {html.escape(history.log_path or 'No log file available')}
-          </p>
-        </div>
-      </body>
-    </html>
-    """
-
-
-def build_cancellation_email_text(job, history, schedule_label, database_results):
-    """Build plain text body for cancellation email."""
-    summary = summarize_database_results(database_results)
-    lines = [
-        f"⛔ {schedule_label} Backup CANCELLED",
-        "=" * 50,
-        "",
-        f"⚠️ The backup was cancelled by the user at {history.cancelled_at.strftime('%Y-%m-%d %H:%M:%S') if history.cancelled_at else 'Unknown time'}.",
-        "",
-        "Database Status:",
-    ]
-
-    for item in database_results:
-        lines.append(f"- {item.get('database', 'Unknown')}: {item.get('status', 'unknown').capitalize()}")
-
-    lines.extend(
-        [
-            "",
-            f"Summary: {summary['success_count']} succeeded, {summary['failed_count']} failed out of {summary['total_count']} databases",
-            "",
-            "Job Details:",
-            f"  Job Name: {job.name}",
-            f"  Started At: {history.start_time.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"  Schedule Type: {schedule_label}",
-            f"  Storage Location: {job.storage_location.name}",
-            "",
-            "⚠️ Backup was cancelled. No further action was taken.",
-            f"Log file available at: {history.log_path or 'No log file available'}",
-        ]
-    )
-
-    return "\n".join(lines)
-def format_bytes(size):
-    if size is None:
-        return "N/A"
-
-    units = ["B", "KiB", "MiB", "GiB", "TiB"]
-    value = float(size)
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)}{unit}"
-            return f"{value:.1f}{unit}"
-        value /= 1024
 
 def get_scheduled_jobs():
     """
@@ -1547,7 +1168,7 @@ def get_scheduled_jobs():
     global scheduler
     if not scheduler:
         return []
-    
+
     try:
         jobs = scheduler.get_jobs()
         job_list = []
@@ -1564,6 +1185,7 @@ def get_scheduled_jobs():
         print(f"❌ Error getting scheduled jobs: {e}")
         return []
 
+
 def reschedule_all_jobs():
     """
     Reschedule all active backup jobs
@@ -1573,10 +1195,10 @@ def reschedule_all_jobs():
     if not scheduler:
         print("❌ Scheduler not available")
         return
-    
+
     from app import app
     from models import BackupJob
-    
+
     with app.app_context():
         # Remove all existing jobs
         try:
@@ -1584,11 +1206,11 @@ def reschedule_all_jobs():
             print("✅ Removed all existing jobs")
         except Exception as e:
             print(f"⚠️ Error removing existing jobs: {e}")
-        
+
         # Schedule all active jobs
         jobs = BackupJob.query.filter_by(is_active=True).all()
         print(f"📋 Rescheduling {len(jobs)} active jobs...")
-        
+
         scheduled_count = 0
         for job in jobs:
             try:
@@ -1596,8 +1218,9 @@ def reschedule_all_jobs():
                 scheduled_count += 1
             except Exception as e:
                 print(f"❌ Failed to schedule job {job.name}: {e}")
-        
+
         print(f"✅ Successfully rescheduled {scheduled_count}/{len(jobs)} jobs")
+
 
 def pause_scheduler():
     """
@@ -1610,6 +1233,7 @@ def pause_scheduler():
     else:
         print("❌ Scheduler not running or not available")
 
+
 def resume_scheduler():
     """
     Resume the scheduler
@@ -1620,6 +1244,7 @@ def resume_scheduler():
         print("▶️ Scheduler resumed")
     else:
         print("❌ Scheduler not available")
+
 
 def get_scheduler_status():
     """
@@ -1633,7 +1258,7 @@ def get_scheduler_status():
             'job_count': 0,
             'error': 'Scheduler not initialized'
         }
-    
+
     try:
         jobs = scheduler.get_jobs()
         return {
@@ -1657,6 +1282,7 @@ def get_scheduler_status():
             'job_count': 0
         }
 
+
 def test_job_execution(job_id):
     """
     Test if a job can be executed (for debugging)
@@ -1669,6 +1295,7 @@ def test_job_execution(job_id):
         print(f"❌ Job test failed: {e}")
         return False
 
+
 # Clean up on module import to handle any stale lock files
 def cleanup_stale_locks():
     """
@@ -1678,7 +1305,7 @@ def cleanup_stale_locks():
         if os.path.exists(SCHEDULER_LOCK_PATH) and not is_lock_file_active(SCHEDULER_LOCK_PATH):
             os.unlink(SCHEDULER_LOCK_PATH)
             print("🧹 Removed stale scheduler lock file")
-        
+
         # Remove any job lock files older than 24 hours
         lock_pattern = '/tmp/backup_job_*.lock'
         import glob
@@ -1693,6 +1320,7 @@ def cleanup_stale_locks():
     except Exception as e:
         print(f"⚠️ Error cleaning up stale locks: {e}")
 
+
 def is_lock_file_active(lock_path):
     try:
         with open(lock_path, 'a+') as lock_handle:
@@ -1705,8 +1333,10 @@ def is_lock_file_active(lock_path):
     except OSError:
         return False
 
+
 # Run cleanup on module import
 cleanup_stale_locks()
+
 
 # Debug function to print current state
 def print_scheduler_debug_info():
@@ -1715,17 +1345,17 @@ def print_scheduler_debug_info():
     print("\n" + "="*50)
     print("SCHEDULER DEBUG INFORMATION")
     print("="*50)
-    
+
     if not scheduler:
         print("❌ Scheduler: NOT INITIALIZED")
         return
-    
+
     status = get_scheduler_status()
     print(f"📊 Scheduler Status: {status['status']}")
     print(f"🏃 Running: {status['running']}")
     print(f"📋 Job Count: {status['job_count']}")
     print(f"⏰ Timezone: {scheduler.timezone if hasattr(scheduler, 'timezone') else 'UTC'}")
-    
+
     if status['job_count'] > 0:
         print("\n📅 Scheduled Jobs (Local Time):")
         for job_info in status['next_runs']:
@@ -1738,8 +1368,9 @@ def print_scheduler_debug_info():
                 print(f"   - {job_info['job_id']}: Not scheduled")
     else:
         print("\n📭 No jobs scheduled")
-    
+
     print("="*50 + "\n")
+
 
 # Call debug info when module loads
 print_scheduler_debug_info()

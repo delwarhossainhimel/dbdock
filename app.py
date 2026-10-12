@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, f
 from models import db, DatabaseServer, StorageLocation, BackupJob, BackupHistory, DatabaseType, StorageType
 from werkzeug.security import check_password_hash, generate_password_hash
 from dotenv import load_dotenv
+from email_notifications import send_notification_email, send_cancellation_email
 from scheduler import init_scheduler, schedule_backup_job, unschedule_backup_job, enqueue_immediate_backup_job, send_test_email
 from sqlalchemy import text, or_
 from job_schedules import (
@@ -39,15 +40,38 @@ MYSQL_CHARSET = os.getenv('MYSQL_CHARSET', 'utf8mb4')
 
 encoded_password = quote_plus(MYSQL_PASSWORD)
 # Build MySQL connection string with encoded password
+# app.config['SQLALCHEMY_DATABASE_URI'] = (
+#     f"mysql+pymysql://{MYSQL_USER}:{encoded_password}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset={MYSQL_CHARSET}"
+# )
+# Build MySQL connection string with encoded password
 app.config['SQLALCHEMY_DATABASE_URI'] = (
-    f"mysql+pymysql://{MYSQL_USER}:{encoded_password}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset={MYSQL_CHARSET}"
+    f"mysql+pymysql://{MYSQL_USER}:{encoded_password}"
+    f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
+    f"?charset={MYSQL_CHARSET}"
 )
+# SQLAlchemy connection pool configuration
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 1800,
+    'pool_timeout': 30,
+    'pool_size': 5,
+    'max_overflow': 10,
+    'connect_args': {
+        'connect_timeout': 10,
+        'read_timeout': 60,
+        'write_timeout': 60,
+    },
+}
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 
 # Example user storage (you can replace this with a DB)
+_admin_user = os.getenv('ADMIN_USER') or 'admin'
+_admin_pass = os.getenv('ADMIN_PASS') or 'admin'
+
+# Example user storage (you can replace this with a DB)
 users = {
-    os.getenv('ADMIN_USER'): generate_password_hash(os.getenv('ADMIN_PASS'))
+    _admin_user: generate_password_hash(_admin_pass)
 }
 
 # Only check for multiple instances when running directly

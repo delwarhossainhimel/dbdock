@@ -182,6 +182,8 @@ document.addEventListener('DOMContentLoaded', function() {
         content = content.replace(/(INFO|Info|ℹ️|🔹|📊|📅|🔄)/g, '<span class="highlight-info">$1</span>');
         
         logView.innerHTML = content;
+        // Always scroll to the bottom so the latest log lines are visible
+        logView.scrollTop = logView.scrollHeight;
     }
 });
 </script>
