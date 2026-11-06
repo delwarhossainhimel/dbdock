@@ -31,7 +31,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        postgresql-client-18 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+# ===============================
+# MySQL 5.6 mysqldump
+# ===============================
+# ARG MYSQL56_VERSION=5.6.51
+# ARG MYSQL56_URL=https://downloads.mysql.com/archives/get/p/23/file/mysql-5.6.51-linux-glibc2.12-x86_64.tar.gz
 
+# RUN mkdir -p /opt/mysql56 \
+#     && cd /tmp \
+#     && wget -q "${MYSQL56_URL}" -O mysql56.tar.gz \
+#     && tar -xzf mysql56.tar.gz \
+#     && mv mysql-5.6.51-linux-glibc2.12-x86_64/* /opt/mysql56/ \
+#     && rm -rf mysql56.tar.gz mysql-5.6.51-linux-glibc2.12-x86_64
+
+# # Create dedicated MySQL 5.6 mysqldump command
+# RUN ln -s /opt/mysql56/bin/mysqldump /usr/local/bin/mysqldump56 \
+#     && ln -s /opt/mysql56/bin/mysql /usr/local/bin/mysql56
+# MySQL 5.6 mysqldump
+# ===============================
 ARG MYSQL56_VERSION=5.6.51
 ARG MYSQL56_URL=https://downloads.mysql.com/archives/get/p/23/file/mysql-5.6.51-linux-glibc2.12-x86_64.tar.gz
 
@@ -39,12 +56,45 @@ RUN mkdir -p /opt/mysql56 \
     && cd /tmp \
     && wget -q "${MYSQL56_URL}" -O mysql56.tar.gz \
     && tar -xzf mysql56.tar.gz \
-    && mv mysql-5.6.51-linux-glibc2.12-x86_64/* /opt/mysql56/ \
-    && rm -rf mysql56.tar.gz mysql-5.6.51-linux-glibc2.12-x86_64
+       --strip-components=1 -C /opt/mysql56 \
+    && rm -f mysql56.tar.gz \
+    \
+    # Keep only mysqldump executable
+    && find /opt/mysql56/bin -type f ! -name mysqldump -delete \
+    && find /opt/mysql56/bin -type l -delete
 
-# Create dedicated MySQL 5.6 mysqldump command
-RUN ln -s /opt/mysql56/bin/mysqldump /usr/local/bin/mysqldump56 \
-    && ln -s /opt/mysql56/bin/mysql /usr/local/bin/mysql56
+# MySQL 5.6 wrapper
+RUN printf '#!/bin/sh\n\
+export LD_LIBRARY_PATH="/opt/mysql56/lib:/opt/mysql56/lib/private:${LD_LIBRARY_PATH:-}"\n\
+exec /opt/mysql56/bin/mysqldump "$@"\n' \
+    > /usr/local/bin/mysqldump56 \
+    && chmod +x /usr/local/bin/mysqldump56
+
+# ===============================
+# MySQL 8.4 LTS mysqldump
+# ===============================
+ARG MYSQL84_VERSION=8.4.13
+ARG MYSQL84_URL=https://dev.mysql.com/get/Downloads/MySQL-8.4/mysql-8.4.13-linux-glibc2.28-x86_64-minimal.tar.xz
+
+RUN mkdir -p /opt/mysql84 \
+    && cd /tmp \
+    && wget -q "${MYSQL84_URL}" -O mysql84.tar.xz \
+    && tar -xJf mysql84.tar.xz \
+       --strip-components=1 -C /opt/mysql84 \
+    && rm -f mysql84.tar.xz \
+    \
+    # Keep only mysqldump executable
+    && find /opt/mysql84/bin -type f ! -name mysqldump -delete \
+    && find /opt/mysql84/bin -type l -delete
+
+# MySQL 8.4 wrapper
+RUN printf '#!/bin/sh\n\
+export LD_LIBRARY_PATH="/opt/mysql84/lib:/opt/mysql84/lib/private:${LD_LIBRARY_PATH:-}"\n\
+exec /opt/mysql84/bin/mysqldump "$@"\n' \
+    > /usr/local/bin/mysqldump84 \
+    && chmod +x /usr/local/bin/mysqldump84
+
+
 # Install Python deps
 COPY requirements.txt .
 

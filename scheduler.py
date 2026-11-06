@@ -572,7 +572,7 @@ def init_scheduler(app):
             'default': MemoryJobStore()
         }
         executors = {
-            'default': ThreadPoolExecutor(20)
+            'default': ThreadPoolExecutor(30)
         }
         job_defaults = {
             'coalesce': True,  # Combine multiple pending executions
