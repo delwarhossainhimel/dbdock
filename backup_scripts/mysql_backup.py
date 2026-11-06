@@ -95,13 +95,13 @@ def get_mysqldump_binary(server):
     minor = int(version_parts[1])
 
     if major == 5 and minor == 6:
-        preferred_binary = "mysqldump56"
+        preferred_binary = "mysqldump84"
 
     elif (major, minor) > (5, 7) and major < 9:
         preferred_binary = "mysqldump84"
 
     else:
-        preferred_binary = "mysqldump"
+        preferred_binary = "mysqldump84"
 
     # Use preferred binary if available
     if shutil.which(preferred_binary):
