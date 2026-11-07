@@ -43,42 +43,10 @@ def get_mysql_version(server):
         print(f"⚠️ Could not determine MySQL server version: {e}")
         return None
 
-# def get_mysqldump_binary(server):
-#     """
-#     Select the appropriate mysqldump binary based on the
-#     database server version.
-#     """
-
-#     version = get_mysql_version(server)
-
-#     if not version:
-#         raise RuntimeError(
-#             "Unable to determine MySQL server version"
-#         )
-
-#     # Remove MariaDB suffix if present
-#     version_clean = version.lower().replace("-mariadb", "")
-
-#     if version_clean.startswith("5.6."):
-#         binary = "mysqldump56"
-#     else:
-#         binary = "mysqldump"
-
-#     if shutil.which(binary) is None:
-#         raise RuntimeError(
-#             f"Required mysqldump binary '{binary}' is not installed"
-#         )
-
-#     print(f"🔧 MySQL server version: {version}")
-#     print(f"🔧 Selected dump client: {binary}")
-
-#     return binary
 def get_mysqldump_binary(server):
     """
     Select the appropriate mysqldump binary based on the
     database server version.
-    Falls back to default mysqldump if the preferred binary
-    is unavailable.
     """
 
     version = get_mysql_version(server)
@@ -88,34 +56,66 @@ def get_mysqldump_binary(server):
             "Unable to determine MySQL server version"
         )
 
+    # Remove MariaDB suffix if present
     version_clean = version.lower().replace("-mariadb", "")
 
-    version_parts = version_clean.split(".")
-    major = int(version_parts[0])
-    minor = int(version_parts[1])
-
-    if major == 5 and minor == 6:
-        preferred_binary = "mysqldump84"
-
-    elif (major, minor) > (5, 7) and major < 9:
-        preferred_binary = "mysqldump84"
-
+    if version_clean.startswith("5.6."):
+        binary = "mysqldump84"
     else:
-        preferred_binary = "mysqldump84"
+        binary = "mysqldump84"
 
-    # Use preferred binary if available
-    if shutil.which(preferred_binary):
-        return preferred_binary
+    if shutil.which(binary) is None:
+        raise RuntimeError(
+            f"Required mysqldump binary '{binary}' is not installed"
+        )
 
-    # Fallback to default mysqldump
-    if shutil.which("mysqldump"):
-        return "mysqldump"
-
-    raise RuntimeError(
-        f"Neither '{preferred_binary}' nor default 'mysqldump' is installed"
-    )
+    print(f"🔧 MySQL server version: {version}")
+    print(f"🔧 Selected dump client: {binary}")
 
     return binary
+# def get_mysqldump_binary(server):
+#     """
+#     Select the appropriate mysqldump binary based on the
+#     database server version.
+#     Falls back to default mysqldump if the preferred binary
+#     is unavailable.
+#     """
+
+#     version = get_mysql_version(server)
+
+#     if not version:
+#         raise RuntimeError(
+#             "Unable to determine MySQL server version"
+#         )
+
+#     version_clean = version.lower().replace("-mariadb", "")
+
+#     version_parts = version_clean.split(".")
+#     major = int(version_parts[0])
+#     minor = int(version_parts[1])
+
+#     if major == 5 and minor == 6:
+#         preferred_binary = "mysqldump84"
+
+#     elif (major, minor) > (5, 7) and major < 9:
+#         preferred_binary = "mysqldump84"
+
+#     else:
+#         preferred_binary = "mysqldump84"
+
+#     # Use preferred binary if available
+#     if shutil.which(preferred_binary):
+#         return preferred_binary
+
+#     # Fallback to default mysqldump
+#     if shutil.which("mysqldump"):
+#         return "mysqldump"
+
+#     raise RuntimeError(
+#         f"Neither '{preferred_binary}' nor default 'mysqldump' is installed"
+#     )
+
+#     return binary
 
 def mysql_backup(server_id, databases, location_id, folder_path, schedule_types, job_id=None, schedule_type=None):
     """
