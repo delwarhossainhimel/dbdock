@@ -73,13 +73,12 @@ def get_mysqldump_binary(server):
         ]
 
     else:
-        binary = "mysqldump"
+        binary = "mysqldump84"
 
         dump_options = [
             '--single-transaction',
             '--skip-lock-tables',
             '--skip-add-locks',
-            '--ignore-views',
             '--routines',
             '--triggers',
             '--add-drop-database',
