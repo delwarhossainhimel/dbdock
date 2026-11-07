@@ -45,7 +45,7 @@ def get_mysql_version(server):
 
 def get_mysqldump_binary(server):
     """
-    Select the appropriate mysqldump binary based on the
+    Select the appropriate mysqldump binary and options based on the
     database server version.
     """
 
@@ -60,9 +60,31 @@ def get_mysqldump_binary(server):
     version_clean = version.lower().replace("-mariadb", "")
 
     if version_clean.startswith("5.6."):
-        binary = "mysqldump84"
+        binary = "mysqldump56"
+
+        dump_options = [
+            '--single-transaction',
+            '--skip-lock-tables',
+            '--skip-add-locks',
+            '--routines',
+            '--triggers',
+            '--add-drop-database',
+            '--databases',
+        ]
+
     else:
-        binary = "mysqldump84"
+        binary = "mysqldump"
+
+        dump_options = [
+            '--single-transaction',
+            '--skip-lock-tables',
+            '--skip-add-locks',
+            '--ignore-views',
+            '--routines',
+            '--triggers',
+            '--add-drop-database',
+            '--databases',
+        ]
 
     if shutil.which(binary) is None:
         raise RuntimeError(
@@ -72,50 +94,7 @@ def get_mysqldump_binary(server):
     print(f"🔧 MySQL server version: {version}")
     print(f"🔧 Selected dump client: {binary}")
 
-    return binary
-# def get_mysqldump_binary(server):
-#     """
-#     Select the appropriate mysqldump binary based on the
-#     database server version.
-#     Falls back to default mysqldump if the preferred binary
-#     is unavailable.
-#     """
-
-#     version = get_mysql_version(server)
-
-#     if not version:
-#         raise RuntimeError(
-#             "Unable to determine MySQL server version"
-#         )
-
-#     version_clean = version.lower().replace("-mariadb", "")
-
-#     version_parts = version_clean.split(".")
-#     major = int(version_parts[0])
-#     minor = int(version_parts[1])
-
-#     if major == 5 and minor == 6:
-#         preferred_binary = "mysqldump84"
-
-#     elif (major, minor) > (5, 7) and major < 9:
-#         preferred_binary = "mysqldump84"
-
-#     else:
-#         preferred_binary = "mysqldump84"
-
-#     # Use preferred binary if available
-#     if shutil.which(preferred_binary):
-#         return preferred_binary
-
-#     # Fallback to default mysqldump
-#     if shutil.which("mysqldump"):
-#         return "mysqldump"
-
-#     raise RuntimeError(
-#         f"Neither '{preferred_binary}' nor default 'mysqldump' is installed"
-#     )
-
-#     return binary
+    return binary , dump_options
 
 def mysql_backup(server_id, databases, location_id, folder_path, schedule_types, job_id=None, schedule_type=None):
     """
@@ -257,7 +236,7 @@ def mysql_backup(server_id, databases, location_id, folder_path, schedule_types,
             sql_filepath = os.path.join(job_tmp_dir, sql_filename)
 
             print(f"📝 Step 1: Dumping database '{database}' to {sql_filename}...")
-            mysqldump_binary = get_mysqldump_binary(server)
+            mysqldump_binary ,dump_options = get_mysqldump_binary(server)
             # Run mysqldump to create .sql file
             cmd = [
                 mysqldump_binary,
@@ -265,12 +244,7 @@ def mysql_backup(server_id, databases, location_id, folder_path, schedule_types,
                 f'-P{server.port}',
                 f'-u{server.username}',
                 f'-p{server.password}',
-                '--single-transaction',
-                '--ignore-views',
-                '--routines',
-                '--triggers',
-                '--add-drop-database',
-                '--databases',
+                *dump_options,
                 database
             ]
 
