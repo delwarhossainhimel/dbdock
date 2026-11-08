@@ -11,21 +11,76 @@
 <div class="row">
     {% for server in servers %}
     <div class="col-md-6 mb-3">
-        <div class="card">
+        <div class="card server-card">
             <div class="card-body">
-                <h5 class="card-title">{{ server.name }}</h5>
-                <p class="card-text">
-                    <strong>Type:</strong> {{ server.type.value }}<br>
-                    <strong>Host:</strong> {{ server.host }}:{{ server.port }}<br>
-                    <strong>Username:</strong> {{ server.username }}
-                </p>
-                <div class="btn-group" role="group">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h5 class="card-title mb-1">
+                            {{ server.name }}
+                            <!-- Status indicator dot -->
+                            <span class="status-indicator 
+                                {% if server.status == 'healthy' %}status-healthy
+                                {% elif server.status == 'failed' %}status-failed
+                                {% elif server.status == 'running' %}status-running
+                                {% elif server.status == 'cancelled' %}status-cancelled-dot
+                                {% elif server.status == 'no_runs' %}status-no-runs
+                                {% else %}status-no-jobs{% endif %}"
+                                title="{{ server.status_message }}">
+                            </span>
+                        </h5>
+                        <p class="card-text mb-2">
+                            <strong>Type:</strong> {{ server.type.value }}<br>
+                            <strong>Host:</strong> {{ server.host }}:{{ server.port }}<br>
+                            <strong>Username:</strong> {{ server.username }}
+                        </p>
+                        
+                        <!-- Status info -->
+                        <div class="status-info mb-2">
+                            {% if server.status == 'healthy' %}
+                            <span class="badge bg-success">
+                                <i class="bi bi-check-circle"></i> {{ server.status_message }}
+                            </span>
+                            {% elif server.status == 'failed' %}
+                            <span class="badge bg-danger">
+                                <i class="bi bi-x-circle"></i> {{ server.status_message }}
+                            </span>
+                            {% elif server.status == 'running' %}
+                            <span class="badge bg-warning text-dark">
+                                <i class="bi bi-clock-history"></i> {{ server.status_message }}
+                            </span>
+                            {% elif server.status == 'cancelled' %}
+                            <span class="badge bg-secondary">
+                                <i class="bi bi-stop-circle"></i> {{ server.status_message }}
+                            </span>
+                            {% elif server.status == 'no_runs' %}
+                            <span class="badge bg-info">
+                                <i class="bi bi-hourglass"></i> {{ server.status_message }}
+                            </span>
+                            {% else %}
+                            <span class="badge bg-secondary">
+                                <i class="bi bi-database"></i> {{ server.status_message }}
+                            </span>
+                            {% endif %}
+                        </div>
+                        
+                        <!-- Job count -->
+                        {% if server.job_count > 0 %}
+                        <div class="mt-1">
+                            <small class="text-muted">
+                                <i class="bi bi-briefcase"></i> {{ server.job_count }} backup job(s)
+                            </small>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                
+                <div class="btn-group mt-3" role="group">
                     <button class="btn btn-sm btn-outline-primary test-connection" data-server-id="{{ server.id }}">
                         Test Connection
                     </button>
-                        <a href="{{ url_for('edit_server', server_id=server.id) }}" class="btn btn-sm btn-outline-secondary">
-                            Edit
-                        </a>
+                    <a href="{{ url_for('edit_server', server_id=server.id) }}" class="btn btn-sm btn-outline-secondary">
+                        Edit
+                    </a>
                     <button class="btn btn-sm btn-outline-danger delete-server" data-server-id="{{ server.id }}">
                         Delete
                     </button>
@@ -82,69 +137,4 @@
         </div>
     </div>
 </div>
-
-<!-- JavaScript for delete functionality -->
-<script>
-// document.addEventListener('DOMContentLoaded', function() {
-//     // Test database connection
-//     document.querySelectorAll('.test-connection').forEach(button => {
-//         button.addEventListener('click', function() {
-//             const serverId = this.dataset.serverId;
-//             const button = this;
-            
-//             button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Testing...';
-//             button.disabled = true;
-            
-//             fetch(`/test_connection/${serverId}`)
-//                 .then(response => response.json())
-//                 .then(data => {
-//                     const alert = document.createElement('div');
-//                     alert.className = `alert alert-${data.success ? 'success' : 'danger'} alert-dismissible fade show mt-2`;
-//                     alert.innerHTML = `
-//                         ${data.message}
-//                         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-//                     `;
-                    
-//                     button.closest('.card-body').appendChild(alert);
-                    
-//                     button.innerHTML = 'Test Connection';
-//                     button.disabled = false;
-                    
-//                     setTimeout(() => {
-//                         alert.remove();
-//                     }, 5000);
-//                 });
-//         });
-//     });
-    
-    // Delete server functionality
-    document.querySelectorAll('.delete-server').forEach(button => {
-        button.addEventListener('click', function() {
-            const serverId = this.dataset.serverId;
-            const serverName = this.closest('.card-body').querySelector('.card-title').textContent;
-            
-            if (confirm(`Are you sure you want to delete server "${serverName}"?`)) {
-                fetch(`/delete_server/${serverId}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        location.reload();
-                    } else {
-                        alert('Error: ' + data.message);
-                    }
-                })
-                .catch(error => {
-                    alert('Error: ' + error);
-                });
-            }
-        });
-    });
-});
-</script>
 {% endblock %}

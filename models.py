@@ -30,6 +30,8 @@ class DatabaseServer(db.Model):
     port = db.Column(db.Integer, nullable=False)
     username = db.Column(db.String(100), nullable=False)
     password = db.Column(db.String(200), nullable=False)
+    
+    dump_client = db.Column(db.String(50), nullable=True)  # <-- NEW FIELD
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
     
@@ -116,6 +118,7 @@ class BackupJob(db.Model):
     retention_policy = db.Column(db.Integer, nullable=False, default=1)
     notification_email = db.Column(db.String(200))
     is_active = db.Column(db.Boolean, default=True)
+    
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

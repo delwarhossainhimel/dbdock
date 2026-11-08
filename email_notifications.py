@@ -2,15 +2,6 @@
 Email notification helpers for dbDock.
 
 All SMTP configuration, sending, and HTML/text template logic lives here.
-`scheduler.py` imports the public functions it needs:
-    - send_notification_email
-    - send_cancellation_email
-    - send_test_email
-
-Each public function takes *IDs* (job_id, history_id) rather than ORM
-objects, and re-fetches what it needs on its own short-lived session.
-This avoids DetachedInstanceError when the scheduler has already
-released its DB session by the time the email is sent.
 """
 
 import html
@@ -25,15 +16,11 @@ from email.utils import formataddr
 from models import BackupHistory, BackupJob
 
 
-# ─────────────────────────────────────────────────────────────────
-# SMTP configuration
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# SMTP CONFIGURATION
+# ============================================================
 
 def get_smtp_config(job):
-    """
-    Build SMTP config. Accepts a *freshly-loaded* BackupJob instance
-    (never a detached one).
-    """
     return {
         'host': os.getenv('SMTP_HOST', '').strip(),
         'port': int(os.getenv('SMTP_PORT', '587')),
@@ -58,12 +45,25 @@ def login_and_send(server, smtp_config, email_message):
 
 
 def _send_email(smtp_config, email_message):
+    # ✅ FIX: add timeout=10 to every SMTP connect. Without this, an
+    #         unreachable mail server blocks for 15-30 seconds per send,
+    #         which kept /tmp/backup_job_<id>.lock held and made the next
+    #         manual Run Now print "⏸️ already running, skipping...".
     if smtp_config['use_ssl']:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(smtp_config['host'], smtp_config['port'], context=context) as server:
+        with smtplib.SMTP_SSL(
+            smtp_config['host'],
+            smtp_config['port'],
+            context=context,
+            timeout=10,
+        ) as server:
             login_and_send(server, smtp_config, email_message)
     else:
-        with smtplib.SMTP(smtp_config['host'], smtp_config['port']) as server:
+        with smtplib.SMTP(
+            smtp_config['host'],
+            smtp_config['port'],
+            timeout=10,
+        ) as server:
             server.ehlo()
             if smtp_config['use_tls']:
                 context = ssl.create_default_context()
@@ -72,9 +72,9 @@ def _send_email(smtp_config, email_message):
             login_and_send(server, smtp_config, email_message)
 
 
-# ─────────────────────────────────────────────────────────────────
-# Shared helpers
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# SHARED HELPERS
+# ============================================================
 
 def format_bytes(size):
     if size is None:
@@ -121,9 +121,9 @@ def get_previous_successful_backup(job_id, current_history_id):
     )
 
 
-# ─────────────────────────────────────────────────────────────────
-# Success / failure report templates
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# SUCCESS / FAILURE TEMPLATES
+# ============================================================
 
 def build_backup_report_html(job, history, schedule_label, database_results, previous_backup):
     summary = summarize_database_results(database_results)
@@ -233,18 +233,11 @@ def build_backup_report_text(job, history, schedule_label, database_results, pre
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────
-# Public API — success/failure email
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# PUBLIC — SUCCESS / FAILURE EMAIL
+# ============================================================
 
 def send_notification_email(job_id, history_id, schedule_targets, success, message, database_results):
-    """
-    Send an HTML backup report email via SMTP using environment variables.
-
-    Takes IDs (not ORM objects) and re-fetches the job + history on a
-    fresh short-lived session so it works even after the scheduler has
-    released its DB session.
-    """
     from app import app
     from models import db
 
@@ -285,9 +278,9 @@ def send_notification_email(job_id, history_id, schedule_targets, success, messa
         print(f"⚠️ Error sending notification email: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────
-# Cancellation templates
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# CANCELLATION TEMPLATES
+# ============================================================
 
 def build_cancellation_email_html(job, history, schedule_label, database_results):
     summary = summarize_database_results(database_results)
@@ -411,17 +404,11 @@ def build_cancellation_email_text(job, history, schedule_label, database_results
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────
-# Public API — cancellation email
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# PUBLIC — CANCELLATION EMAIL
+# ============================================================
 
 def send_cancellation_email(job_id, history_id, schedule_targets, database_results, success):
-    """
-    Send a cancellation email notification.
-
-    Takes IDs (not ORM objects) and re-fetches the job + history on a
-    fresh short-lived session.
-    """
     from app import app
     from models import db
 
@@ -462,12 +449,11 @@ def send_cancellation_email(job_id, history_id, schedule_targets, database_resul
         print(f"⚠️ Error sending cancellation email: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────
-# Public API — SMTP test email
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# PUBLIC — SMTP TEST EMAIL
+# ============================================================
 
 def send_test_email(recipient_email):
-    """Send a simple SMTP test email to verify configuration."""
     from app import app
 
     with app.app_context():

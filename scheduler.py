@@ -832,6 +832,15 @@ def run_backup_job(job_id, trigger_source='manual'):
 
         with app.app_context():
             from models import BackupJob, DatabaseServer, StorageLocation, BackupHistory, db
+            # ✅ CRITICAL: clear the session at the very start so nothing
+            # inherited from a prior request / prior job on this thread
+            # can leak a stale DatabaseServer (old dump_client) into
+            # this run.
+            try:
+                db.session.remove()
+                db.engine.dispose()
+            except Exception as _e:
+                print(f"⚠️ Pre-run session clean failed: {_e}")
 
             # Check if cancelled before starting
             if is_job_cancelled(job_id, trigger_source):
@@ -1140,6 +1149,13 @@ def run_backup_job(job_id, trigger_source='manual'):
                 pass
         except Exception as e:
             print(f"⚠️ Error releasing lock for job {job_id} ({trigger_source}): {e}")
+
+        # ✅ Leave the worker thread's session clean
+        try:
+            from models import db as _db
+            _db.session.remove()
+        except Exception:
+            pass
 
 
 def build_history_message(message, database_results):

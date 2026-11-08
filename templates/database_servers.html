@@ -31,7 +31,13 @@
                         <p class="card-text mb-2">
                             <strong>Type:</strong> {{ server.type.value }}<br>
                             <strong>Host:</strong> {{ server.host }}:{{ server.port }}<br>
-                            <strong>Username:</strong> {{ server.username }}
+                            <strong>Username:</strong> {{ server.username }}<br>
+                            <strong>Dump client:</strong>
+                            {% if server.dump_client %}
+                                <span class="badge bg-dark">{{ server.dump_client }}</span>
+                            {% else %}
+                                <span class="badge bg-warning text-dark">auto-detect</span>
+                            {% endif %}
                         </p>
                         
                         <!-- Status info -->
@@ -107,7 +113,7 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Type</label>
-                        <select class="form-select" name="type" required>
+                        <select class="form-select" name="type" id="serverTypeSelect" required>
                             <option value="mysql">MySQL</option>
                             <option value="postgres">PostgreSQL</option>
                         </select>
@@ -127,6 +133,35 @@
                     <div class="mb-3">
                         <label class="form-label">Password</label>
                         <input type="password" class="form-control" name="password" required>
+                    </div>
+
+                    <!-- NEW: Dump client selector -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Dump Client
+                            <i class="bi bi-info-circle" title="The dump binary used to take backups. Must match the server's major version."></i>
+                        </label>
+
+                        <select class="form-select" name="dump_client" id="mysqlDumpClientSelect">
+                            {% for c in mysql_dump_clients %}
+                            <option value="{{ c.value }}" {% if c.value == 'mysqldump84' %}selected{% endif %}>
+                                {{ c.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+
+                        <select class="form-select d-none" name="dump_client" id="pgDumpClientSelect" disabled>
+                            {% for c in postgres_dump_clients %}
+                            <option value="{{ c.value }}" {% if c.value == 'pg_dump' %}selected{% endif %}>
+                                {{ c.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+
+                        <div class="form-text">
+                            Tip: pick the client that matches the target server's major version.
+                            If the binary is missing on the host, the backup will fail with a clear error.
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">

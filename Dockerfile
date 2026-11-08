@@ -28,26 +28,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        > /etc/apt/sources.list.d/pgdg.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-       postgresql-client-18 \
+        postgresql-client-15 \
+        postgresql-client-16 \
+        postgresql-client-17 \
+        postgresql-client-18 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-# ===============================
-# MySQL 5.6 mysqldump
-# ===============================
-# ARG MYSQL56_VERSION=5.6.51
-# ARG MYSQL56_URL=https://downloads.mysql.com/archives/get/p/23/file/mysql-5.6.51-linux-glibc2.12-x86_64.tar.gz
 
-# RUN mkdir -p /opt/mysql56 \
-#     && cd /tmp \
-#     && wget -q "${MYSQL56_URL}" -O mysql56.tar.gz \
-#     && tar -xzf mysql56.tar.gz \
-#     && mv mysql-5.6.51-linux-glibc2.12-x86_64/* /opt/mysql56/ \
-#     && rm -rf mysql56.tar.gz mysql-5.6.51-linux-glibc2.12-x86_64
+RUN for version in 15 16 17 18; do \
+      printf '#!/bin/sh\nexec /usr/lib/postgresql/%s/bin/pg_dump "$@"\n' "$version" \
+        > "/usr/local/bin/pg_dump${version}"; \
+      chmod +x "/usr/local/bin/pg_dump${version}"; \
+    done
 
-# # Create dedicated MySQL 5.6 mysqldump command
-# RUN ln -s /opt/mysql56/bin/mysqldump /usr/local/bin/mysqldump56 \
-#     && ln -s /opt/mysql56/bin/mysql /usr/local/bin/mysql56
-# MySQL 5.6 mysqldump
 # ===============================
 ARG MYSQL56_VERSION=5.6.51
 ARG MYSQL56_URL=https://downloads.mysql.com/archives/get/p/23/file/mysql-5.6.51-linux-glibc2.12-x86_64.tar.gz
@@ -69,6 +62,26 @@ export LD_LIBRARY_PATH="/opt/mysql56/lib:/opt/mysql56/lib/private:${LD_LIBRARY_P
 exec /opt/mysql56/bin/mysqldump "$@"\n' \
     > /usr/local/bin/mysqldump56 \
     && chmod +x /usr/local/bin/mysqldump56
+ARG MYSQL80_VERSION=8.0.46
+ARG MYSQL80_URL=https://dev.mysql.com/get/Downloads/MySQL-8.0/mysql-8.0.46-linux-glibc2.17-x86_64-minimal.tar.xz
+
+RUN mkdir -p /opt/mysql80 \
+    && cd /tmp \
+    && wget -q "${MYSQL80_URL}" -O mysql80.tar.xz \
+    && tar -xJf mysql80.tar.xz \
+       --strip-components=1 -C /opt/mysql80 \
+    && rm -f mysql80.tar.xz \
+    \
+    # Keep only mysqldump executable
+    && find /opt/mysql80/bin -type f ! -name mysqldump -delete \
+    && find /opt/mysql80/bin -type l -delete
+
+# MySQL 8.0 wrapper
+RUN printf '#!/bin/sh\n\
+export LD_LIBRARY_PATH="/opt/mysql80/lib:/opt/mysql80/lib/private:${LD_LIBRARY_PATH:-}"\n\
+exec /opt/mysql80/bin/mysqldump "$@"\n' \
+    > /usr/local/bin/mysqldump80 \
+    && chmod +x /usr/local/bin/mysqldump80
 
 # ===============================
 # MySQL 8.4 LTS mysqldump

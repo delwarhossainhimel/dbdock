@@ -45,55 +45,51 @@ def get_mysql_version(server):
 
 def get_mysqldump_binary(server):
     """
-    Select the appropriate mysqldump binary and options based on the
-    database server version.
+    Return the configured mysqldump binary and its options.
+    Uses server.dump_client (set when the server was added/edited).
+    Falls back to version auto-detection only if dump_client is empty.
     """
+    from dump_clients import (
+        get_dump_client_options,
+        get_dump_clients_for_type,
+    )
 
+    # 1) Preferred: use the explicitly configured dump_client
+    dump_client = getattr(server, 'dump_client', None)
+    if dump_client:
+        allowed = [c['value'] for c in get_dump_clients_for_type('mysql')]
+        if dump_client not in allowed:
+            raise RuntimeError(
+                f"Configured mysqldump client '{dump_client}' is not in the "
+                f"allowed list {allowed}. Edit this server and pick a valid client."
+            )
+        if shutil.which(dump_client) is None:
+            raise RuntimeError(
+                f"Required dump binary '{dump_client}' is not installed on the host."
+            )
+        options = get_dump_client_options('mysql', dump_client)
+        print(f"🔧 Using configured mysqldump client: {dump_client}")
+        return dump_client, options
+
+    # 2) Fallback: legacy auto-detect (kept for safety)
+    print("⚠️ No dump_client configured for this server; falling back to version detection")
     version = get_mysql_version(server)
-
     if not version:
-        raise RuntimeError(
-            "Unable to determine MySQL server version"
-        )
+        raise RuntimeError("Unable to determine MySQL server version and no dump_client configured")
 
-    # Remove MariaDB suffix if present
     version_clean = version.lower().replace("-mariadb", "")
-
     if version_clean.startswith("5.6."):
         binary = "mysqldump56"
-
-        dump_options = [
-            '--single-transaction',
-            '--skip-lock-tables',
-            '--skip-add-locks',
-            '--routines',
-            '--triggers',
-            '--add-drop-database',
-            '--databases',
-        ]
-
+        options = get_dump_client_options('mysql', 'mysqldump56')
     else:
         binary = "mysqldump84"
-
-        dump_options = [
-            '--single-transaction',
-            '--skip-lock-tables',
-            '--skip-add-locks',
-            '--routines',
-            '--triggers',
-            '--add-drop-database',
-            '--databases',
-        ]
+        options = get_dump_client_options('mysql', 'mysqldump84')
 
     if shutil.which(binary) is None:
-        raise RuntimeError(
-            f"Required mysqldump binary '{binary}' is not installed"
-        )
+        raise RuntimeError(f"Required mysqldump binary '{binary}' is not installed")
 
-    print(f"🔧 MySQL server version: {version}")
-    print(f"🔧 Selected dump client: {binary}")
-
-    return binary , dump_options
+    print(f"🔧 Auto-selected dump client: {binary} (server version {version})")
+    return binary, options
 
 def mysql_backup(server_id, databases, location_id, folder_path, schedule_types, job_id=None, schedule_type=None):
     """
@@ -125,6 +121,8 @@ def mysql_backup(server_id, databases, location_id, folder_path, schedule_types,
     from models import DatabaseServer, StorageLocation, db
 
     with app.app_context():
+        db.session.remove()   # ✅ start clean
+
         server = db.session.get(DatabaseServer, server_id)
         location = db.session.get(StorageLocation, location_id)
 
@@ -132,7 +130,14 @@ def mysql_backup(server_id, databases, location_id, folder_path, schedule_types,
             raise ValueError(f"DatabaseServer id={server_id} not found")
         if location is None:
             raise ValueError(f"StorageLocation id={location_id} not found")
-
+        
+        # ✅ Force DB round-trip
+        db.session.refresh(server)
+        db.session.refresh(location)
+        # ✅ Log exactly which dump_client we're about to use
+        print(f"🔎 [mysql_backup] server_id={server_id} "
+            f"dump_client={getattr(server, 'dump_client', None)!r}")
+        
         # Force-load every attribute used by this function and the
         # helper functions below (get_mysqldump_binary, check_database_exists,
         # get_all_mysql_databases, apply_retention_policy, delete_old_backup_files).
@@ -141,6 +146,7 @@ def mysql_backup(server_id, databases, location_id, folder_path, schedule_types,
             server.username, server.password,
             server.type,
             server.type.value if hasattr(server.type, "value") else server.type,
+            getattr(server, "dump_client", None),
 
             location.id, location.name,
             location.type,

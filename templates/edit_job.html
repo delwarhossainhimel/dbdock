@@ -2,6 +2,12 @@
 
 {% block content %}
 {% set schedule_config = job.normalized_schedule_config %}
+
+{# Expose the server → dump-client map to JavaScript as a global. #}
+<script>
+    window.__serverDumpInfo = {{ (server_dump_info or {}) | tojson }};
+</script>
+
 <div class="row justify-content-center">
     <div class="col-md-8">
         <div class="card">
@@ -28,6 +34,13 @@
                             </option>
                             {% endfor %}
                         </select>
+                        <!-- Dump-client info (read-only, sourced from the server) -->
+                        <div id="dump-client-info" class="mt-2 p-2 bg-light rounded border small">
+                            <i class="bi bi-info-circle"></i>
+                            <span class="text-muted">Dump client:</span>
+                            <span id="dump-client-value" class="badge bg-secondary">—</span>
+                            <span id="dump-client-edit-link" class="ms-2"></span>
+                        </div>
                     </div>
                     
                     <!-- Databases Section with "All Databases" Option -->
@@ -74,7 +87,6 @@
                     <div class="mb-3">
                         <label class="form-label">Schedules</label>
                         <div class="border rounded p-3">
-                            <!-- Master Time - Applies to all schedules -->
                             <div class="mb-3 p-3 bg-light rounded">
                                 <label class="form-label fw-bold">⏰ Backup Time (Applies to all schedules)</label>
                                 {% set master_time = '00:00' %}
@@ -260,11 +272,45 @@ document.addEventListener('DOMContentLoaded', function() {
     const selectedDatabases = {{ selected_databases | tojson }};
     let selectAllState = selectAllDatabases ? selectAllDatabases.checked : false;
 
-    function attachSelectAllHandler(container) {
-        const selectAll = container.querySelector('#select-all');
-        if (!selectAll) {
+    // ──────────────────────────────────────────────────────────
+    // DUMP CLIENT INFO PANEL
+    // Reads window.__serverDumpInfo (injected above by Jinja)
+    // and updates the badge whenever the server changes.
+    // ──────────────────────────────────────────────────────────
+    const dumpClientValueEl    = document.getElementById('dump-client-value');
+    const dumpClientEditLinkEl = document.getElementById('dump-client-edit-link');
+    const serverDumpInfo       = window.__serverDumpInfo || {};
+
+    console.log('[dump-client-info] map loaded:', serverDumpInfo);
+
+    function syncDumpClientInfo() {
+        if (!serverSelect || !dumpClientValueEl) return;
+
+        const info = serverDumpInfo[String(serverSelect.value)];
+        console.log('[dump-client-info] selected server:', serverSelect.value, '→', info);
+
+        if (!info) {
+            dumpClientValueEl.textContent = '—';
+            dumpClientValueEl.className = 'badge bg-secondary';
+            if (dumpClientEditLinkEl) dumpClientEditLinkEl.innerHTML = '';
             return;
         }
+
+        dumpClientValueEl.textContent = info.label || info.dump_client || '—';
+        dumpClientValueEl.className = 'badge bg-dark';
+
+        if (dumpClientEditLinkEl) {
+            dumpClientEditLinkEl.innerHTML =
+                `<a href="${info.edit_url}" class="link-primary ms-1">Edit server to change</a>`;
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Database list helpers
+    // ──────────────────────────────────────────────────────────
+    function attachSelectAllHandler(container) {
+        const selectAll = container.querySelector('#select-all');
+        if (!selectAll) return;
 
         selectAll.addEventListener('click', function() {
             const checkboxes = container.querySelectorAll('input[type="checkbox"][name="databases"]');
@@ -303,7 +349,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 databaseList.innerHTML = '';
 
-                // Header with count
                 const header = document.createElement('div');
                 header.className = 'd-flex justify-content-between align-items-center mb-2';
                 header.innerHTML = `
@@ -332,10 +377,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 databaseList.appendChild(selectAll);
                 attachSelectAllHandler(databaseList);
 
-                // Update selected count
                 updateSelectedCount();
 
-                // If "All Databases" is checked, disable individual checkboxes
                 if (selectAllState) {
                     document.querySelectorAll('.database-checkbox').forEach(cb => cb.disabled = true);
                 }
@@ -352,11 +395,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 checkbox.disabled = selectAllState;
             });
             updateSelectedCount();
-            
+
             if (selectAllState) {
-                console.log('✅ All Databases mode activated - new databases will be auto-detected during backup');
+                console.log('✅ All Databases mode activated');
             } else {
-                // Re-enable checkboxes and restore previous selection
                 if (serverSelect && serverSelect.value) {
                     loadDatabases(serverSelect.value);
                 }
@@ -364,10 +406,14 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Wire server select — update BOTH the database list AND the dump-client badge
     if (serverSelect) {
         loadDatabases(serverSelect.value);
+        syncDumpClientInfo();
+
         serverSelect.addEventListener('change', function() {
             loadDatabases(this.value);
+            syncDumpClientInfo();
         });
     }
 
@@ -386,10 +432,9 @@ document.addEventListener('DOMContentLoaded', function() {
         syncPanel();
     });
 
-    // Master time sync - auto-fill all time fields when master changes
+    // Master time sync
     const masterTime = document.getElementById('master_time');
     if (masterTime) {
-        // When master time changes, update all individual time inputs (they're hidden but kept for compatibility)
         masterTime.addEventListener('change', function() {
             const time = this.value;
             document.querySelectorAll('input[type="time"][name$="_time"]').forEach(function(input) {
@@ -418,18 +463,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
             fetch('/test_email', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email }),
             })
             .then((response) => response.json())
-            .then((data) => {
-                alert(data.message);
-            })
-            .catch((error) => {
-                alert('Error: ' + error);
-            })
+            .then((data) => { alert(data.message); })
+            .catch((error) => { alert('Error: ' + error); })
             .finally(() => {
                 this.disabled = false;
                 this.textContent = 'Send Test Email';

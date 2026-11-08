@@ -15,7 +15,7 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Type</label>
-                        <select class="form-select" name="type" required>
+                        <select class="form-select" name="type" id="serverTypeSelect" required>
                             <option value="mysql" {% if server.type.value == 'mysql' %}selected{% endif %}>MySQL</option>
                             <option value="postgres" {% if server.type.value == 'postgres' %}selected{% endif %}>PostgreSQL</option>
                         </select>
@@ -36,6 +36,42 @@
                         <label class="form-label">Password</label>
                         <input type="password" class="form-control" name="password" placeholder="Leave blank to keep current password">
                     </div>
+
+                    <!-- Dump Client selector -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Dump Client
+                            <i class="bi bi-info-circle"
+                               title="The dump binary used to take backups. Must match the server's major version."></i>
+                        </label>
+
+                        <!-- MySQL clients -->
+                        <select class="form-select" name="dump_client" id="mysqlDumpClientSelect">
+                            {% for c in mysql_dump_clients %}
+                            <option value="{{ c.value }}"
+                                {% if server.dump_client == c.value %}selected{% elif not server.dump_client and c.value == 'mysqldump84' %}selected{% endif %}>
+                                {{ c.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+
+                        <!-- PostgreSQL clients -->
+                        <select class="form-select d-none" name="dump_client" id="pgDumpClientSelect" disabled>
+                            {% for c in postgres_dump_clients %}
+                            <option value="{{ c.value }}"
+                                {% if server.dump_client == c.value %}selected{% elif not server.dump_client and c.value == 'pg_dump' %}selected{% endif %}>
+                                {{ c.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+
+                        <div class="form-text">
+                            Current value:
+                            <code>{{ server.dump_client or 'not set (will auto-detect)' }}</code>
+                            &nbsp;·&nbsp;Pick the client that matches the target server's major version.
+                        </div>
+                    </div>
+
                     <div class="d-flex justify-content-between">
                         <a href="{{ url_for('database_servers') }}" class="btn btn-secondary">Cancel</a>
                         <button type="submit" class="btn btn-primary">Update Server</button>

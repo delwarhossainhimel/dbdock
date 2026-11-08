@@ -13,6 +13,23 @@ services:
       - "3306:3306"
     volumes:
       - db_data:/var/lib/mysql
+    networks:
+      - dbdock-network
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      UPLOAD_LIMIT: 512M
+    ports:
+      - "8080:80"
+    networks:
+      - dbdock-network
   # dbdock:
   #   image: delwarhossainhimel/dbdock:2.0.1
   #   container_name: dbdock
@@ -48,5 +65,8 @@ services:
   #     - ./backupdatabase:/app/backupdatabase
   #     - ./tmp:/app/tmp
   #     - ./backup_logs:/app/backup_logs
+networks:
+  dbdock-network:
+    driver: bridge
 volumes:
   db_data:

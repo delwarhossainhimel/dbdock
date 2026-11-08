@@ -10,7 +10,29 @@ from .utils import create_job_tmp_directory, cleanup_job_tmp_directory, create_f
 from job_schedules import get_enabled_schedule_types, get_schedule_retention, normalize_schedule_config
 
 
-def postgres_backup(server_id, databases, location_id, folder_path, schedule_types, job_id=None, schedule_type=None):
+def get_pg_dump_binary(server):
+    """
+    Return the configured pg_dump binary.
+    Falls back to plain 'pg_dump' if none is set.
+    """
+    from dump_clients import get_dump_clients_for_type
+
+    dump_client = getattr(server, 'dump_client', None) or 'pg_dump'
+    allowed = [c['value'] for c in get_dump_clients_for_type('postgres')]
+    if dump_client not in allowed:
+        raise RuntimeError(
+            f"Configured pg_dump client '{dump_client}' is not in allowed list {allowed}"
+        )
+    if shutil.which(dump_client) is None:
+        raise RuntimeError(
+            f"Required pg_dump binary '{dump_client}' is not installed on the host."
+        )
+    print(f"🔧 Using configured pg_dump client: {dump_client}")
+    return dump_client
+
+
+def postgres_backup(server_id, databases, location_id, folder_path,
+                    schedule_types, job_id=None, schedule_type=None):
     """
     PostgreSQL backup with process tracking for cancellation.
     Each database is: dumped -> compressed -> uploaded -> cleaned up.
@@ -19,28 +41,27 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
     session before this long-running function starts. We open our own
     short-lived session here to re-fetch the server and location, snapshot
     every attribute we need into memory, then release the connection so
-    MySQL's/Postgres's wait_timeout cannot kill an idle connection while
-    the dump runs.
+    the connection pool cannot time out an idle connection during the dump.
     """
     print(f"🔍 DEBUG: postgres_backup called with schedule_type={schedule_type}, job_id={job_id}")
 
-    # Get the scheduler module to register processes
-    from scheduler import register_backup_process, unregister_backup_process, register_child_process, unregister_child_process, is_job_cancelled
+    from scheduler import (
+        register_backup_process,
+        unregister_backup_process,
+        register_child_process,
+        unregister_child_process,
+        is_job_cancelled,
+    )
 
     # ─────────────────────────────────────────────────────────────────
-    # Re-fetch server + location on a fresh session. The caller has
-    # already released its session, so the ORM objects it held were
-    # detached. We open our own session, force-load every attribute the
-    # rest of this function will access, then release the connection.
-    #
-    # The `server` and `location` variables below are detached but fully
-    # populated, so every existing `server.xxx` / `location.xxx` access
-    # in the body reads from memory — no lazy load, no DetachedInstanceError.
+    # Re-fetch server + location, snapshot attributes, release connection.
     # ─────────────────────────────────────────────────────────────────
     from app import app
     from models import DatabaseServer, StorageLocation, db
 
     with app.app_context():
+        db.session.remove()   # ✅ start clean
+
         server = db.session.get(DatabaseServer, server_id)
         location = db.session.get(StorageLocation, location_id)
 
@@ -49,14 +70,19 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
         if location is None:
             raise ValueError(f"StorageLocation id={location_id} not found")
 
-        # Force-load every attribute used by this function and the
-        # helper functions below (check_database_exists, get_all_postgres_databases,
-        # apply_retention_policy, delete_old_backup_files).
+        db.session.refresh(server)
+        db.session.refresh(location)
+
+        # ✅ Log exactly which dump_client we're about to use
+        print(f"🔎 [postgres_backup] server_id={server_id} "
+            f"dump_client={getattr(server, 'dump_client', None)!r}")
+
         _ = (
             server.id, server.name, server.host, server.port,
             server.username, server.password,
             server.type,
             server.type.value if hasattr(server.type, "value") else server.type,
+            getattr(server, "dump_client", None),
 
             location.id, location.name,
             location.type,
@@ -70,19 +96,14 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
             getattr(location, "bucket_name", None),
         )
 
-        # Release the DB connection. `remove()` both detaches the
-        # objects and returns the connection to the pool, which is
-        # what prevents "server has gone away" on the final commit.
         db.session.remove()
 
-    # Create job and schedule-specific tmp directory
     job_tmp_dir = create_job_tmp_directory(job_id, schedule_type)
 
     try:
         print(f"Backup targets: {schedule_types}")
         print(f"Job temporary directory: {job_tmp_dir}")
 
-        # Check if 'all' is selected - auto-detect databases
         is_all_databases = False
         if 'all' in databases or '__all__' in databases:
             is_all_databases = True
@@ -94,7 +115,6 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
         else:
             print(f"📊 Using manually selected databases: {', '.join(databases)}")
 
-        # Verify all databases exist first
         print("🔍 Verifying databases exist...")
         valid_databases = []
         invalid_databases = []
@@ -112,7 +132,6 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
 
         print(f"✅ Found {len(valid_databases)} valid databases: {', '.join(valid_databases)}")
 
-        # Track results for each database
         database_results = []
         all_backup_files = []
         total_success = 0
@@ -122,13 +141,13 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
         total_size = 0
         was_cancelled = False
 
-        # Process each database one by one
+        # ✅ Resolve the dump binary ONCE (fails fast if the binary is missing)
+        pg_dump_bin = get_pg_dump_binary(server)
+
         for database in valid_databases:
-            # CHECK CANCELLATION BEFORE PROCESSING EACH DATABASE
             if is_job_cancelled(job_id, schedule_type):
                 was_cancelled = True
                 print(f"🛑 Backup cancelled by user, stopping after {database}")
-                # Mark remaining databases as cancelled
                 remaining_databases = valid_databases[valid_databases.index(database):]
                 for remaining_db in remaining_databases:
                     database_results.append({
@@ -146,25 +165,23 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
 
             timestamp = datetime.now().strftime('%Y-%m-%d')
 
-            # Step 1: Dump database to .sql file
             sql_filename = f"{database}_{timestamp}.sql"
             sql_filepath = os.path.join(job_tmp_dir, sql_filename)
 
             print(f"📝 Step 1: Dumping database '{database}' to {sql_filename}...")
 
-            # Set environment variables for pg_dump
             env = os.environ.copy()
             env['PGPASSWORD'] = server.password
 
-            # Run pg_dump command to create .sql file
+            # ✅ Use the resolved variable (NOT the quoted string 'pg_dump_bin')
             pg_dump_cmd = [
-                'pg_dump',
+                pg_dump_bin,
                 '-h', server.host,
                 '-p', str(server.port),
                 '-U', server.username,
-                '-F', 'p',  # Plain format
-                '-C',  # Include CREATE DATABASE statement
-                database
+                '-F', 'p',   # Plain format
+                '-C',        # Include CREATE DATABASE statement
+                database,
             ]
 
             dump_success = False
@@ -172,27 +189,22 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
             process = None
 
             try:
-                # Start the pg_dump process
                 process = subprocess.Popen(
                     pg_dump_cmd,
                     env=env,
                     stdout=open(sql_filepath, 'w'),
                     stderr=subprocess.PIPE,
                     text=True,
-                    preexec_fn=os.setsid  # Create a new process group for easy killing
+                    preexec_fn=os.setsid,
                 )
 
-                # Register the process for cancellation
                 register_backup_process(job_id, schedule_type, process, None)
 
-                # If this is an "All Databases" run, also register as a child
                 if is_all_databases:
                     register_child_process(job_id, schedule_type, process)
 
-                # Wait for the process to complete
                 stdout, stderr = process.communicate()
 
-                # Unregister child process if it was registered
                 if is_all_databases and process:
                     unregister_child_process(job_id, schedule_type, process)
 
@@ -210,13 +222,10 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                 dump_error = str(e)
                 print(f"   ❌ Dump failed with exception: {dump_error}")
             finally:
-                # Unregister the process
                 unregister_backup_process(job_id, schedule_type)
-                # Unregister child process if it was registered
                 if is_all_databases and process:
                     unregister_child_process(job_id, schedule_type, process)
 
-            # If dump failed, record failure and continue to next database
             if not dump_success:
                 database_results.append({
                     'database': database,
@@ -226,18 +235,16 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                 })
                 total_failed += 1
 
-                # Clean up partial files if they exist
                 if os.path.exists(sql_filepath):
                     os.remove(sql_filepath)
                     print(f"   🗑️ Removed partial dump file")
-                # Check if cancelled before continuing
                 if is_job_cancelled(job_id, schedule_type):
                     was_cancelled = True
                     print(f"🛑 Backup cancelled by user, stopping after {database}")
                     break
                 continue
 
-            # Step 2: Compress .sql to .sql.gz
+            # Compress
             gz_filename = f"{database}_{timestamp}.sql.gz"
             gz_filepath = os.path.join(job_tmp_dir, gz_filename)
 
@@ -248,7 +255,6 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
             compressed_size = 0
 
             try:
-                # Compress using gzip
                 with open(sql_filepath, 'rb') as f_in:
                     with gzip.open(gz_filepath, 'wb', compresslevel=6) as f_out:
                         shutil.copyfileobj(f_in, f_out)
@@ -262,7 +268,6 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                 compress_error = str(e)
                 print(f"   ❌ Compression failed: {compress_error}")
 
-            # If compression failed, record failure and continue
             if not compress_success:
                 database_results.append({
                     'database': database,
@@ -272,19 +277,17 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                 })
                 total_failed += 1
 
-                # Clean up temp files
                 if os.path.exists(sql_filepath):
                     os.remove(sql_filepath)
                 if os.path.exists(gz_filepath):
                     os.remove(gz_filepath)
-                # Check if cancelled before continuing
                 if is_job_cancelled(job_id, schedule_type):
                     was_cancelled = True
                     print(f"🛑 Backup cancelled by user, stopping after {database}")
                     break
                 continue
 
-            # Step 3: Upload to storage
+            # Upload
             print(f"📤 Step 3: Uploading {gz_filename} to storage...")
 
             upload_success = False
@@ -292,18 +295,15 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
             uploaded_path = ""
 
             try:
-                # Upload to each schedule type folder
                 for schedule_type_item in schedule_types:
                     full_folder_path = create_full_folder_path(folder_path, schedule_type_item)
                     print(f"   📤 Uploading to: {full_folder_path}")
 
-                    # Use the storage provider
                     config = json.loads(location.config)
                     storage_type = location.type.value
                     storage_provider = get_storage_provider(storage_type)
 
                     if storage_provider:
-                        # Upload single file
                         upload_result = storage_provider.upload_files(
                             config,
                             full_folder_path,
@@ -315,7 +315,6 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                             uploaded_path = upload_result[2] if upload_result[2] else gz_filename
                             print(f"   ✅ Uploaded successfully: {uploaded_path}")
 
-                            # Add to uploaded files list
                             all_backup_files.append((gz_filepath, gz_filename))
                             total_size += compressed_size
                             uploaded_files.append(uploaded_path)
@@ -331,7 +330,6 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                 upload_success = False
                 upload_message = str(e)
 
-            # If upload failed, record failure
             if not upload_success:
                 database_results.append({
                     'database': database,
@@ -349,7 +347,7 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                 })
                 total_success += 1
 
-            # Step 4: Clean up temp files for this database
+            # Cleanup temp files
             print(f"🧹 Step 4: Cleaning up temp files for {database}...")
             try:
                 if os.path.exists(sql_filepath):
@@ -363,11 +361,9 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
 
             print(f"✅ Finished processing database: {database}")
 
-            # CHECK CANCELLATION AFTER EACH DATABASE
             if is_job_cancelled(job_id, schedule_type):
                 was_cancelled = True
                 print(f"🛑 Backup cancelled by user, stopping after {database}")
-                # Mark remaining databases as cancelled
                 remaining_databases = valid_databases[valid_databases.index(database) + 1:]
                 for remaining_db in remaining_databases:
                     database_results.append({
@@ -379,7 +375,7 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
                     total_cancelled += 1
                 break
 
-        # Clean up the temporary directory
+        # Clean tmp dir
         print(f"\n🧹 Cleaning up temporary directory: {job_tmp_dir}")
         try:
             if os.path.exists(job_tmp_dir):
@@ -388,29 +384,28 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
         except Exception as e:
             print(f"   ⚠️ Could not remove directory: {e}")
 
-        # After all databases are processed, apply retention policy
+        # Retention
         print(f"\n🗄️ Applying retention policy...")
         for schedule_type_item in schedule_types:
             apply_retention_policy(location, folder_path, schedule_type_item)
 
-        # Build the final result
         uploaded_files_str = ";".join(uploaded_files) if uploaded_files else None
 
-        # Handle cancellation
         if was_cancelled:
             skipped = len(valid_databases) - total_success - total_failed - total_cancelled
             if total_success > 0 or total_failed > 0:
-                message = f"Backup cancelled by user after {total_success} successful, {total_failed} failed, {skipped} skipped"
+                message = (f"Backup cancelled by user after {total_success} successful, "
+                           f"{total_failed} failed, {skipped} skipped")
             else:
                 message = "Backup cancelled by user before completion"
             return False, message, uploaded_files_str, total_size, database_results
 
-        # Normal completion
         if total_failed == 0 and total_success > 0:
             message = f"Successfully backed up all {total_success} databases"
             return True, message, uploaded_files_str, total_size, database_results
         elif total_success > 0 and total_failed > 0:
-            message = f"Partial success: {total_success} succeeded, {total_failed} failed out of {len(databases)} databases"
+            message = (f"Partial success: {total_success} succeeded, "
+                       f"{total_failed} failed out of {len(databases)} databases")
             return False, message, uploaded_files_str, total_size, database_results
         elif total_success == 0 and total_failed > 0:
             message = f"All {total_failed} databases failed to backup"
@@ -427,9 +422,7 @@ def postgres_backup(server_id, databases, location_id, folder_path, schedule_typ
 
 
 def check_database_exists(server, database):
-    """
-    Check if a database exists on the PostgreSQL server
-    """
+    """Check if a database exists on the PostgreSQL server"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -452,9 +445,7 @@ def check_database_exists(server, database):
 
 
 def get_all_postgres_databases(server):
-    """
-    Connect to PostgreSQL server and get all databases excluding system databases
-    """
+    """Connect to PostgreSQL server and get all databases excluding system databases"""
     try:
         import psycopg2
         conn = psycopg2.connect(
@@ -466,13 +457,13 @@ def get_all_postgres_databases(server):
             connect_timeout=10
         )
         cursor = conn.cursor()
-        cursor.execute("SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres'")
-
+        cursor.execute(
+            "SELECT datname FROM pg_database "
+            "WHERE datistemplate = false AND datname != 'postgres'"
+        )
         databases = [row[0] for row in cursor.fetchall()]
-
         cursor.close()
         conn.close()
-
         return databases
     except Exception as e:
         print(f"⚠️ Error detecting databases from PostgreSQL server: {e}")
@@ -484,7 +475,6 @@ def upload_to_storage(location, folder_path, backup_files):
     config = json.loads(location.config)
     storage_type = location.type.value
 
-    # Get the appropriate storage provider
     storage_provider = get_storage_provider(storage_type)
     if not storage_provider:
         return False, f"Unsupported storage type: {storage_type}", None, 0
@@ -520,19 +510,15 @@ def build_partial_failure_message(database_results):
 
 
 def apply_retention_policy(location, base_folder_path, schedule_type):
-    """
-    Apply retention policy by deleting old backup files
-    """
+    """Apply retention policy by deleting old backup files"""
     try:
         from app import app
         from models import BackupJob
         from datetime import datetime, timedelta
 
-        # Create the full folder path for retention policy checks
         full_folder_path = create_full_folder_path(base_folder_path, schedule_type)
 
         with app.app_context():
-            # Get all backup jobs that use this storage location and base folder
             jobs = BackupJob.query.filter_by(
                 storage_location_id=location.id,
                 folder_path=base_folder_path,
@@ -573,10 +559,8 @@ def apply_retention_policy(location, base_folder_path, schedule_type):
 
                 print(f"Cutoff date: {cutoff_date}, Retention: {retention_value} {schedule_type}(s)")
 
-                # Get databases for this job
                 databases = json.loads(job.databases)
 
-                # Handle 'all' databases - we need to get actual database names
                 if 'all' in databases or '__all__' in databases:
                     try:
                         server = job.database_server
@@ -588,7 +572,6 @@ def apply_retention_policy(location, base_folder_path, schedule_type):
                         print(f"⚠️ Could not auto-detect databases for retention: {e}")
                         continue
 
-                # Delete old files for each database from the schedule-specific folder
                 for database in databases:
                     deleted_count = delete_old_backup_files(location, full_folder_path, database, cutoff_date)
                     if deleted_count > 0:
@@ -603,7 +586,6 @@ def delete_old_backup_files(location, folder_path, database, cutoff_date):
     config = json.loads(location.config)
     storage_type = location.type.value
 
-    # Get the appropriate storage provider
     storage_provider = get_storage_provider(storage_type)
     if not storage_provider:
         print(f"Unsupported storage type for deletion: {storage_type}")
