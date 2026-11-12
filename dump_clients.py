@@ -14,8 +14,6 @@ MYSQL_DUMP_CLIENTS = [
             '--skip-add-locks',
             '--routines',
             '--triggers',
-            '--add-drop-database',
-            '--databases',
         ],
     },
     {
@@ -28,8 +26,6 @@ MYSQL_DUMP_CLIENTS = [
             '--skip-add-locks',
             '--routines',
             '--triggers',
-            '--add-drop-database',
-            '--databases',
         ],
     },
     {
@@ -42,8 +38,8 @@ MYSQL_DUMP_CLIENTS = [
             '--skip-add-locks',
             '--routines',
             '--triggers',
-            '--add-drop-database',
-            '--databases',
+            '--events',
+            '--add-drop-table',
         ],
     },
     {
@@ -56,8 +52,6 @@ MYSQL_DUMP_CLIENTS = [
             '--skip-add-locks',
             '--routines',
             '--triggers',
-            '--add-drop-database',
-            '--databases',
         ],
     },
 ]
